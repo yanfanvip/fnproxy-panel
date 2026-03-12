@@ -12,6 +12,7 @@ let terminalResizeBound = false;
 let terminalFocusBound = false;
 let terminalSessions = [];
 let sshConnectionsCache = [];
+let usersCache = [];
 let activeTerminalSessionId = null;
 let currentModalVariant = 'default';
 let modalHeightFrame = null;
@@ -140,6 +141,43 @@ function generateRandomHexToken(length = 32) {
     const bytes = new Uint8Array(byteLength);
     window.crypto.getRandomValues(bytes);
     return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('').slice(0, normalizedLength);
+}
+
+async function copyTextToClipboard(text) {
+    const value = String(text || '');
+    if (!value) {
+        throw new Error('没有可复制的内容');
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+        return;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', 'readonly');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    if (!copied) {
+        throw new Error('复制失败，请手动复制');
+    }
+}
+
+async function copyUserToken(id) {
+    const user = usersCache.find(item => item.id === id);
+    if (!user || !String(user.token || '').trim()) {
+        showToast('该用户尚未设置 token', 'error');
+        return;
+    }
+    try {
+        await copyTextToClipboard(user.token.trim());
+        showToast(`已复制 ${user.username} 的 token`, 'success');
+    } catch (err) {
+        showToast(err.message || '复制 token 失败', 'error');
+    }
 }
 
 // 当前选中的端口ID
@@ -2828,6 +2866,7 @@ async function loadUsers() {
             const tbody = document.getElementById('usersTable');
             const mobileList = document.getElementById('usersMobileList');
             const users = data.data || [];
+            usersCache = users;
             if (!users.length) {
                 tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#64748b; padding:32px;">暂无用户</td></tr>';
                 if (mobileList) {
@@ -2842,6 +2881,7 @@ async function loadUsers() {
                     <td><span class="user-status-badge ${u.enabled === false ? 'disabled' : 'enabled'}">${u.enabled === false ? '已禁用' : '已启用'}</span></td>
                     <td class="actions">
                         <button class="btn btn-primary icon-btn" title="编辑用户" onclick="showUserModal('${u.id}')">✏️</button>
+                        <button class="btn btn-success icon-btn" title="${u.token ? '复制 token' : '未设置 token'}" onclick="copyUserToken('${u.id}')">📋</button>
                         <button class="btn ${u.enabled === false ? 'btn-success' : 'btn-warning'} icon-btn" title="${u.enabled === false ? '启用用户' : '禁用用户'}" onclick="toggleUser('${u.id}')">${u.enabled === false ? '▶' : '⏸'}</button>
                         <button class="btn btn-danger icon-btn" title="删除用户" onclick="deleteUser('${u.id}')">🗑</button>
                     </td>
@@ -2859,6 +2899,7 @@ async function loadUsers() {
                         </div>
                         <div class="user-mobile-card-actions">
                             <button class="btn btn-primary icon-btn" title="编辑用户" onclick="showUserModal('${u.id}')">✏️</button>
+                            <button class="btn btn-success icon-btn" title="${u.token ? '复制 token' : '未设置 token'}" onclick="copyUserToken('${u.id}')">📋</button>
                             <button class="btn ${u.enabled === false ? 'btn-success' : 'btn-warning'} icon-btn" title="${u.enabled === false ? '启用用户' : '禁用用户'}" onclick="toggleUser('${u.id}')">${u.enabled === false ? '▶' : '⏸'}</button>
                             <button class="btn btn-danger icon-btn" title="删除用户" onclick="deleteUser('${u.id}')">🗑</button>
                         </div>
@@ -2868,6 +2909,7 @@ async function loadUsers() {
         }
     } catch (err) {
         console.error('Failed to load users:', err);
+        usersCache = [];
         const tbody = document.getElementById('usersTable');
         const mobileList = document.getElementById('usersMobileList');
         if (tbody) {

@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -86,7 +85,10 @@ func ClearAuthCookie(w http.ResponseWriter, secure bool) {
 
 // GetAuthClaimsFromRequest 从请求中读取Cookie认证信息
 func GetAuthClaimsFromRequest(r *http.Request) (*Claims, error) {
-	if claims, _ := getAuthClaimsFromHeader(r); claims != nil {
+	if claims, _ := getAuthClaimsFromHeaderValue(r.Header.Get("Auth"), false); claims != nil {
+		return claims, nil
+	}
+	if claims, _ := getAuthClaimsFromHeaderValue(r.Header.Get("Authorization"), true); claims != nil {
 		return claims, nil
 	}
 	cookie, err := r.Cookie(AuthCookieName)
@@ -96,25 +98,28 @@ func GetAuthClaimsFromRequest(r *http.Request) (*Claims, error) {
 	return ValidateToken(cookie.Value)
 }
 
-func getAuthClaimsFromHeader(r *http.Request) (*Claims, error) {
-	headerToken := normalizeAuthHeaderToken(r.Header.Get("Auth"))
+func getAuthClaimsFromHeaderValue(headerValue string, allowJWT bool) (*Claims, error) {
+	headerToken := normalizeAuthHeaderToken(headerValue)
 	if headerToken == "" {
 		return nil, nil
 	}
 	user := config.GetManager().GetUserByToken(headerToken)
-	if user == nil {
-		return nil, errors.New("invalid auth token")
+	if user != nil {
+		if !user.Enabled {
+			return nil, nil
+		}
+		return &Claims{
+			Username: user.Username,
+			Role:     user.Role,
+			RegisteredClaims: jwt.RegisteredClaims{
+				IssuedAt: jwt.NewNumericDate(time.Now()),
+			},
+		}, nil
 	}
-	if !user.Enabled {
-		return nil, errors.New("user is disabled")
+	if allowJWT {
+		return ValidateToken(headerToken)
 	}
-	return &Claims{
-		Username: user.Username,
-		Role:     user.Role,
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt: jwt.NewNumericDate(time.Now()),
-		},
-	}, nil
+	return nil, nil
 }
 
 func normalizeAuthHeaderToken(value string) string {
