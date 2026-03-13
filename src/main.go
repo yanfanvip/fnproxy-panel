@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
-	"caddy-panel/caddy"
-	"caddy-panel/config"
-	"caddy-panel/handlers"
-	"caddy-panel/middleware"
-	"caddy-panel/security"
-	"caddy-panel/utils"
+	"fnproxy/config"
+	"fnproxy/fnproxy"
+	"fnproxy/handlers"
+	"fnproxy/middleware"
+	"fnproxy/security"
+	"fnproxy/utils"
 )
 
 func main() {
@@ -102,9 +102,9 @@ func main() {
 		return cfg.GetConfig().Global.MaxSecurityLogEntries
 	})
 
-	// 初始化Caddy服务器
-	caddyServer := caddy.GetServer()
-	caddyServer.SetSecureSecret(secureValue)
+	// 初始化代理服务器
+	proxyServer := fnproxy.GetServer()
+	proxyServer.SetSecureSecret(secureValue)
 	utils.GetMonitor()
 	certManager := utils.GetCertificateManager()
 
@@ -442,12 +442,12 @@ func main() {
 		fmt.Printf("PID 文件已写入：%s\n", pidFilePath)
 	}
 
-	if err := caddyServer.Start(); err != nil {
+	if err := proxyServer.Start(); err != nil {
 		fmt.Printf("部分端口启动失败，程序将继续运行: %v\n", err)
 	}
 	renewCtx, renewCancel := context.WithCancel(context.Background())
 	certManager.StartAutoRenew(renewCtx)
-	fmt.Println("Caddy服务器已启动")
+	fmt.Println("代理服务器已启动")
 
 	// 优雅关闭
 	quit := make(chan os.Signal, 1)
@@ -460,9 +460,9 @@ func main() {
 	// 关闭终端会话
 	handlers.CloseAllSessions()
 
-	// 停止Caddy服务器
-	if err := caddyServer.Stop(); err != nil {
-		fmt.Printf("停止Caddy服务器失败: %v\n", err)
+	// 停止代理服务器
+	if err := proxyServer.Stop(); err != nil {
+		fmt.Printf("停止代理服务器失败: %v\n", err)
 	}
 
 	// 关闭HTTP服务器

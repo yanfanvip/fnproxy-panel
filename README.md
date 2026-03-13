@@ -20,11 +20,11 @@
 ## 目录结构
 
 ```text
-caddy-panel/
+fnproxy-panel/
   src/                     Go 源码与前端静态资源
     go.mod
     main.go
-    caddy/
+    fnproxy/
     config/
     handlers/
     middleware/
@@ -54,7 +54,7 @@ caddy-panel/
 在项目根目录执行：
 
 ```bash
-go -C src build -trimpath -o ../build/caddy-panel.exe .
+go -C src build -trimpath -o ../build/fnproxy-panel.exe .
 ```
 
 Windows 可直接使用：
@@ -86,13 +86,13 @@ debug.bat
 ### 3. 直接运行
 
 ```bash
-./build/caddy-panel-windows-amd64.exe
+./build/fnproxy-panel-windows-amd64.exe
 ```
 
 或在 Linux：
 
 ```bash
-./build/caddy-panel-linux-amd64
+./build/fnproxy-panel-linux-amd64
 ```
 
 ## 默认登录信息
@@ -132,25 +132,25 @@ debug.bat
 使用自定义运行目录和安全参数启动：
 
 ```bash
-./build/caddy-panel-linux-amd64 -config_path=/data/caddy-panel -secure="your-secret"
+./build/fnproxy-panel-linux-amd64 -config_path=/data/fnproxy-panel -secure="your-secret"
 ```
 
 将管理后台绑定到 9090 端口：
 
 ```bash
-./build/caddy-panel-linux-amd64 -port=9090
+./build/fnproxy-panel-linux-amd64 -port=9090
 ```
 
 查看运行状态：
 
 ```bash
-./build/caddy-panel-linux-amd64 status
+./build/fnproxy-panel-linux-amd64 status
 ```
 
 停止进程：
 
 ```bash
-./build/caddy-panel-linux-amd64 stop
+./build/fnproxy-panel-linux-amd64 stop
 ```
 
 ## 运行期文件

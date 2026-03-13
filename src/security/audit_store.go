@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"caddy-panel/models"
+	"fnproxy/models"
 
 	bolt "go.etcd.io/bbolt"
 )

@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"caddy-panel/caddy"
-	"caddy-panel/config"
-	"caddy-panel/models"
-	"caddy-panel/security"
-	"caddy-panel/utils"
+	"fnproxy/config"
+	"fnproxy/fnproxy"
+	"fnproxy/models"
+	"fnproxy/security"
+	"fnproxy/utils"
 
 	"github.com/google/uuid"
 )
@@ -54,7 +54,7 @@ func decryptIncomingPassword(value string) (string, error) {
 	if !strings.HasPrefix(value, encryptedPasswordPrefix) {
 		return value, nil
 	}
-	plainBytes, err := caddy.GetServer().DecryptSecurePayload(strings.TrimPrefix(value, encryptedPasswordPrefix))
+	plainBytes, err := fnproxy.GetServer().DecryptSecurePayload(strings.TrimPrefix(value, encryptedPasswordPrefix))
 	if err != nil {
 		return "", err
 	}
@@ -147,7 +147,7 @@ func ListListenersHandler(w http.ResponseWriter, r *http.Request) {
 	for _, listener := range listeners {
 		items = append(items, listenerListItem{
 			PortListener: listener,
-			Running:      caddy.GetServer().IsListenerRunning(listener.ID),
+			Running:      fnproxy.GetServer().IsListenerRunning(listener.ID),
 		})
 	}
 	WriteSuccess(w, items)
@@ -200,7 +200,7 @@ func CreateListenerHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 如果启用，启动监听器
 	if listener.Enabled {
-		if err := caddy.GetServer().StartListener(listener); err != nil {
+		if err := fnproxy.GetServer().StartListener(listener); err != nil {
 			WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -253,12 +253,12 @@ func UpdateListenerHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 启用状态和配置热更新
 	if listener.Enabled {
-		if err := caddy.GetServer().StartListener(listener); err != nil {
+		if err := fnproxy.GetServer().StartListener(listener); err != nil {
 			WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	} else if oldListener.Enabled {
-		if err := caddy.GetServer().StopListener(id); err != nil {
+		if err := fnproxy.GetServer().StopListener(id); err != nil {
 			WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -286,7 +286,7 @@ func DeleteListenerHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 停止监听器
 	if listener.Enabled {
-		caddy.GetServer().StopListener(id)
+		fnproxy.GetServer().StopListener(id)
 	}
 
 	if err := config.GetManager().DeleteListener(id); err != nil {
@@ -309,18 +309,18 @@ func ToggleListenerHandler(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, "Listener not found")
 		return
 	}
-	running := caddy.GetServer().IsListenerRunning(id)
+	running := fnproxy.GetServer().IsListenerRunning(id)
 	updated := *listener
 	updated.UpdatedAt = time.Now()
 
 	if running {
-		if err := caddy.GetServer().StopListener(id); err != nil {
+		if err := fnproxy.GetServer().StopListener(id); err != nil {
 			WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		updated.Enabled = false
 		if err := config.GetManager().UpdateListener(updated); err != nil {
-			if restartErr := caddy.GetServer().StartListener(*listener); restartErr != nil {
+			if restartErr := fnproxy.GetServer().StartListener(*listener); restartErr != nil {
 				WriteError(w, http.StatusInternalServerError, fmt.Sprintf("停止监听后保存状态失败，且回滚失败: %v", restartErr))
 				return
 			}
@@ -339,7 +339,7 @@ func ToggleListenerHandler(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := caddy.GetServer().StartListener(updated); err != nil {
+	if err := fnproxy.GetServer().StartListener(updated); err != nil {
 		WriteSuccessWithMessage(w, updated, fmt.Sprintf("监听已设为启用，但启动失败: %v", err))
 		return
 	}
@@ -360,7 +360,7 @@ func ReloadListenerHandler(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "当前端口未启用，无需重载")
 		return
 	}
-	if err := caddy.GetServer().ReloadListener(id); err != nil {
+	if err := fnproxy.GetServer().ReloadListener(id); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -397,7 +397,7 @@ func CreateServiceHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 重新加载对应端口的服务
 	if service.Enabled {
-		if err := caddy.GetServer().ReloadService(service); err != nil {
+		if err := fnproxy.GetServer().ReloadService(service); err != nil {
 			WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -429,7 +429,7 @@ func UpdateServiceHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 只有监听器是启用状态时才重新加载服务
 	if !wasListenerDisabled {
-		if err := caddy.GetServer().ReloadService(service); err != nil {
+		if err := fnproxy.GetServer().ReloadService(service); err != nil {
 			WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -453,7 +453,7 @@ func DeleteServiceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 重新加载对应端口的服务
-	if err := caddy.GetServer().ReloadService(*service); err != nil {
+	if err := fnproxy.GetServer().ReloadService(*service); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -477,7 +477,7 @@ func ReorderServicesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	listener := config.GetManager().GetListener(req.PortID)
 	if listener != nil && listener.Enabled {
-		if err := caddy.GetServer().StartListener(*listener); err != nil {
+		if err := fnproxy.GetServer().StartListener(*listener); err != nil {
 			WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -502,7 +502,7 @@ func ToggleServiceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := caddy.GetServer().ReloadService(*service); err != nil {
+	if err := fnproxy.GetServer().ReloadService(*service); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -737,11 +737,12 @@ func GetConfigHandler(w http.ResponseWriter, r *http.Request) {
 		"certificate_config_path":           cfg.Global.CertificateConfigPath,
 		"certificate_sync_interval_seconds": cfg.Global.CertificateSyncIntervalSeconds,
 		"effective_paths": map[string]string{
-			"pid_path":          config.RuntimePIDFilePath(),
-			"socket_path":       config.RuntimeSocketFilePath(),
-			"cache_path":        config.RuntimeMonitorCachePath(),
-			"managed_certs_dir": config.RuntimeManagedCertDir(),
-			"account_certs_dir": config.RuntimeAccountCertDir(),
+			"pid_path":           config.RuntimePIDFilePath(),
+			"socket_path":        config.RuntimeSocketFilePath(),
+			"cache_path":         config.RuntimeMonitorCachePath(),
+			"security_logs_path": config.RuntimeSecurityLogCachePath(),
+			"managed_certs_dir":  config.RuntimeManagedCertDir(),
+			"account_certs_dir":  config.RuntimeAccountCertDir(),
 			"runtime_base_dir":  config.GetRuntimeBaseDir(),
 			"config_file_path":  config.ConfigFilePath(),
 		},
@@ -764,9 +765,9 @@ func UpdateConfigHandler(w http.ResponseWriter, r *http.Request) {
 	WriteSuccess(w, global)
 }
 
-// RestartServerHandler 重启Caddy服务器
+// RestartServerHandler 重启代理服务器
 func RestartServerHandler(w http.ResponseWriter, r *http.Request) {
-	if err := caddy.GetServer().Restart(); err != nil {
+	if err := fnproxy.GetServer().Restart(); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

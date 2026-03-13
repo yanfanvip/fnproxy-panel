@@ -1,4 +1,4 @@
-package caddy
+package fnproxy
 
 import (
 	"bufio"
@@ -25,16 +25,16 @@ import (
 	"sync"
 	"time"
 
-	"caddy-panel/config"
-	"caddy-panel/models"
-	"caddy-panel/pkg/oauth"
-	"caddy-panel/security"
-	"caddy-panel/utils"
+	"fnproxy/config"
+	"fnproxy/models"
+	"fnproxy/pkg/oauth"
+	"fnproxy/security"
+	"fnproxy/utils"
 
 	"github.com/gorilla/websocket"
 )
 
-// Server Caddy服务器管理
+// Server 代理服务器管理
 type Server struct {
 	mu                sync.RWMutex
 	ctx               context.Context
@@ -160,7 +160,7 @@ var sharedTransport = &http.Transport{
 	},
 }
 
-// GetServer 获取Caddy服务器单例
+// GetServer 获取代理服务器单例
 func GetServer() *Server {
 	once.Do(func() {
 		privateKey, publicKeyPEM := mustGenerateOAuthKeyPair(defaultSecureSecret)

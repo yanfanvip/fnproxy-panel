@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"caddy-panel/utils"
+	"fnproxy/utils"
 )
 
 // NetworkHistoryHandler 24小时网络历史

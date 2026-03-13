@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"caddy-panel/caddy"
-	"caddy-panel/config"
-	"caddy-panel/pkg/oauth"
-	"caddy-panel/security"
-	"caddy-panel/utils"
+	"fnproxy/config"
+	"fnproxy/fnproxy"
+	"fnproxy/pkg/oauth"
+	"fnproxy/security"
+	"fnproxy/utils"
 )
 
 // LoginRequest 登录请求
@@ -77,7 +77,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 func AuthPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
 	WriteSuccess(w, map[string]string{
-		"public_key": caddy.GetServer().GetOAuthPublicKeyPEM(),
+		"public_key": fnproxy.GetServer().GetOAuthPublicKeyPEM(),
 	})
 }
 
@@ -210,7 +210,7 @@ func parseAdminOAuthLoginPayload(r *http.Request) (*adminOAuthLoginPayload, erro
 }
 
 func decryptAdminOAuthPayload(encryptedPayload string) (*adminOAuthLoginPayload, error) {
-	privateKey := caddy.GetServer().GetOAuthPrivateKey()
+	privateKey := fnproxy.GetServer().GetOAuthPrivateKey()
 	if privateKey == nil {
 		return nil, fmt.Errorf("服务端未配置加密密钥")
 	}
@@ -246,7 +246,7 @@ func renderAdminOAuthLoginPage(w http.ResponseWriter, r *http.Request, errMsg st
 	if redirectTarget == "" {
 		redirectTarget = r.FormValue("redirect")
 	}
-	publicKeyPEM := caddy.GetServer().GetOAuthPublicKeyPEM()
+	publicKeyPEM := fnproxy.GetServer().GetOAuthPublicKeyPEM()
 	oauth.RenderLoginPage(w, redirectTarget, errMsg, publicKeyPEM)
 }
 

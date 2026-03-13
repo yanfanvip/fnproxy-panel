@@ -6,7 +6,7 @@
 
 ## 本次改动
 
-- 新增 `SSHConnection` 配置模型，并持久化到 `caddy-panel.json`。
+- 新增 `SSHConnection` 配置模型，并持久化到 `fnproxy-panel.json`。
 - 新增 SSH 连接管理接口：
   - `GET /api/ssh-connections`
   - `POST /api/ssh-connections`

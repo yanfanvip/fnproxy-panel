@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	configFileName        = "caddy-panel.json"
-	pidFileName           = "caddy-panel.pid"
-	socketFileName        = "caddy-panel.sock"
+	configFileName         = "fnproxy.json"
+	pidFileName            = "fnproxy.pid"
+	socketFileName         = "fnproxy.sock"
 	monitorCacheRelative  = "cache/monitor-cache.db"
 	securityCacheRelative = "cache/security-logs.db"
 	managedCertsRelative  = "certs/managed"

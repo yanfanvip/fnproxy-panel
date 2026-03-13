@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"caddy-panel/models"
+	"fnproxy/models"
 
 	"github.com/google/uuid"
 )

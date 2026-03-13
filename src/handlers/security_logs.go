@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"caddy-panel/security"
+	"fnproxy/security"
 )
 
 // HandleGetSecurityLogs 获取安全日志列表

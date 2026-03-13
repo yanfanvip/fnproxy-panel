@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"caddy-panel/config"
-	"caddy-panel/models"
-	"caddy-panel/security"
-	"caddy-panel/utils"
+	"fnproxy/config"
+	"fnproxy/models"
+	"fnproxy/security"
+	"fnproxy/utils"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"

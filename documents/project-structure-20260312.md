@@ -16,7 +16,7 @@ project-root/
     go.mod
     go.sum
     main.go
-    caddy/
+    fnproxy/
     config/
     handlers/
     middleware/
@@ -28,15 +28,15 @@ project-root/
   build/
   cache/
   certs/
-  caddy-panel.json
-  caddy-panel.pid
+  fnproxy-panel.json
+  fnproxy-panel.pid
 ```
 
 ## 说明
 
 - Go 入口文件已移动到 `src/main.go`。
 - Go module 根目录已调整到 `src/`，`go.mod` 与 `go.sum` 均位于 `src/`。
-- 后端包导入路径统一改为 `caddy-panel/...`。
+- 后端包导入路径统一改为 `fnproxy-panel/...`。
 - 前端静态资源目录已移动到 `src/static/`。
 - `src/static/` 的页面资源会在构建时内嵌进可执行文件，无需单独拷贝静态文件。
 - `build/` 目录预留为编译产物目录。
@@ -46,7 +46,7 @@ project-root/
 在项目根目录执行：
 
 ```bash
-go -C src build -o ../build/caddy-panel.exe .
+go -C src build -o ../build/fnproxy-panel.exe .
 ```
 
 也可以直接使用根目录脚本：

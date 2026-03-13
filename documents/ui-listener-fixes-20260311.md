@@ -19,7 +19,7 @@
 - 重构服务弹窗的表单回填与模式切换逻辑，修复编辑服务时配置不回显的问题。
 - 为端口详情服务列表增加请求令牌和端口二次过滤，避免快速切换端口时旧请求覆盖当前页面数据。
 - 更新 `src/config/manager.go`，删除端口监听时同步清理该端口下的服务配置，避免遗留孤儿数据。
-- 更新 `src/caddy/server.go` 的监听路由逻辑，改为基于请求 `Host` 匹配服务域名规则（含 `*` 通配），修复 `a.localhost -> 8443 -> 8100` 场景下默认文本输出返回 404 的问题。
+- 更新 `src/fnproxy/server.go` 的监听路由逻辑，改为基于请求 `Host` 匹配服务域名规则（含 `*` 通配），修复 `a.localhost -> 8443 -> 8100` 场景下默认文本输出返回 404 的问题。
 - 新增运行时监控能力：
   - 首页使用 24 小时网络流量图表展示每 10 分钟平均值
   - 端口监听页展示连接数、请求数、总流量和实时速率
@@ -94,7 +94,7 @@
 - 新增启动参数：
   - `-config_path` 用于指定配置文件、缓存、证书和 PID 文件的保存根目录
   - `-port=数字` 可覆盖管理后台 TCP 端口
-  - `-port=sock` 会在 `config_path` 下创建 `caddy-panel.sock` 作为管理后台 Unix Socket
+  - `-port=sock` 会在 `config_path` 下创建 `fnproxy-panel.sock` 作为管理后台 Unix Socket
   - `status` / `-action=status` 会根据 PID 文件判断程序是否运行
   - `stop` / `-action=stop` 会根据 PID 文件停止当前进程
   - `restart` / `-action=restart` 会先停止 PID 文件对应进程，再启动新进程

@@ -1,4 +1,4 @@
-module caddy-panel
+module fnproxy
 
 go 1.26.1
 

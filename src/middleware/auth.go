@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"caddy-panel/handlers"
-	"caddy-panel/utils"
+	"fnproxy/handlers"
+	"fnproxy/utils"
 )
 
 // AuthMiddleware 认证中间件

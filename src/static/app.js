@@ -1,4 +1,4 @@
-// Caddy Panel Frontend JavaScript
+// fnproxy Panel Frontend JavaScript
 
 const API_BASE = '/api';
 let currentToken = localStorage.getItem('token');
@@ -3276,6 +3276,7 @@ async function loadSettings() {
             document.getElementById('effectivePidPath').value = effectivePaths.pid_path || '';
             document.getElementById('effectiveSocketPath').value = effectivePaths.socket_path || '';
             document.getElementById('effectiveCachePath').value = effectivePaths.cache_path || '';
+            document.getElementById('effectiveSecurityLogsPath').value = effectivePaths.security_logs_path || '';
             document.getElementById('effectiveManagedCertsDir').value = effectivePaths.managed_certs_dir || '';
             document.getElementById('effectiveAccountCertsDir').value = effectivePaths.account_certs_dir || '';
         }

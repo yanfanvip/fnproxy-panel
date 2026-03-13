@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"caddy-panel/config"
-	"caddy-panel/models"
-	"caddy-panel/security"
-	"caddy-panel/utils"
+	"fnproxy/config"
+	"fnproxy/models"
+	"fnproxy/security"
+	"fnproxy/utils"
 )
 
 type certificateUpsertRequest struct {

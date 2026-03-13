@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"caddy-panel/config"
-	"caddy-panel/models"
+	"fnproxy/config"
+	"fnproxy/models"
 
 	"github.com/google/uuid"
 	gnet "github.com/shirou/gopsutil/v3/net"

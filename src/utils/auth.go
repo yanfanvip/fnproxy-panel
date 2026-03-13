@@ -5,12 +5,12 @@ import (
 	"strings"
 	"time"
 
-	"caddy-panel/config"
+	"fnproxy/config"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const AuthCookieName = "caddy_panel_auth"
+const AuthCookieName = "fnproxy_auth"
 
 var jwtSecret = []byte("your-secret-key-change-in-production")
 

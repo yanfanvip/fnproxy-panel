@@ -14,15 +14,15 @@
 ## 方案概览
 
 - 后端 ACME 能力基于 `github.com/go-acme/lego/v4` 实现。
-- 证书配置存储在 `caddy-panel.json` 的 `certs` 节点。
+- 证书配置存储在 `fnproxy-panel.json` 的 `certs` 节点。
 - 外部证书配置文件路径与同步周期存储在全局配置中。
 - 运行时支持通过启动参数 `-config_path` 指定配置/缓存/证书/PID 文件的保存根目录，默认使用当前运行目录。
-- 程序启动时会先检查 `<config_path>/caddy-panel.pid` 对应进程是否仍在运行；若已运行则直接退出，避免重复启动。
+- 程序启动时会先检查 `<config_path>/fnproxy-panel.pid` 对应进程是否仍在运行；若已运行则直接退出，避免重复启动。
 - 证书文件落盘到：
   - `certs/managed/<id>.crt`
   - `certs/managed/<id>.key`
   - `certs/accounts/<id>.account.key`
-- 运行中的进程 PID 会写入 `<config_path>/caddy-panel.pid`。
+- 运行中的进程 PID 会写入 `<config_path>/fnproxy-panel.pid`。
 - HTTPS 监听从“按端口固定证书”切换为“按 SNI 动态选证书”。
 - 程序内嵌一份 100 年有效期的默认证书与私钥；当服务未匹配到可用业务证书时，会优先使用该内嵌默认证书作为 HTTPS 回退证书。
 - 自动续签任务在进程内定时执行，默认每小时扫描一次。

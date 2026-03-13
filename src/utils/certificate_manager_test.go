@@ -91,7 +91,7 @@ func generateTestCertificate(t *testing.T, dnsNames []string) ([]byte, []byte) {
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			CommonName:   dnsNames[0],
-			Organization: []string{"Caddy Panel Test"},
+			Organization: []string{"fnproxy Panel Test"},
 		},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),

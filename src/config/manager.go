@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"caddy-panel/models"
-	"caddy-panel/security"
+	"fnproxy/models"
+	"fnproxy/security"
 )
 
 const defaultCertificateConfigPath = "/usr/trim/etc/network_gateway_cert.conf"
@@ -41,7 +41,7 @@ func GetManager() *Manager {
 					AdminPort:                      8080,
 					DefaultAuth:                    false,
 					LogLevel:                       "info",
-					LogFile:                        "caddy-panel.log",
+					LogFile:                        "fnproxy.log",
 					LogRetentionDays:               7,
 					MaxAccessLogEntries:            10000,
 					MaxSecurityLogEntries:          5000,
@@ -114,7 +114,7 @@ func (m *Manager) normalizeGlobalLocked() {
 		m.config.Global.LogLevel = "info"
 	}
 	if m.config.Global.LogFile == "" {
-		m.config.Global.LogFile = "caddy-panel.log"
+		m.config.Global.LogFile = "fnproxy.log"
 	}
 	if m.config.Global.LogRetentionDays <= 0 {
 		m.config.Global.LogRetentionDays = 7

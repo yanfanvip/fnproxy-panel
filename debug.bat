@@ -11,7 +11,7 @@ set GOOS=windows
 set GOARCH=amd64
 
 echo Building debug executable...
-go -C src build -trimpath -o "..\build\caddy-panel-debug.exe" .
+go -C src build -trimpath -o "..\build\fnproxy-panel-debug.exe" .
 if errorlevel 1 (
     echo Build failed.
     exit /b 1
@@ -19,7 +19,7 @@ if errorlevel 1 (
 
 echo Starting from debug directory...
 pushd "debug"
-"..\build\caddy-panel-debug.exe"
+"..\build\fnproxy-panel-debug.exe"
 set EXIT_CODE=%ERRORLEVEL%
 popd
 

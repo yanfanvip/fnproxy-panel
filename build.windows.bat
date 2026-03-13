@@ -10,11 +10,11 @@ set GOOS=windows
 set GOARCH=amd64
 
 echo Building Windows executable...
-go -C src build -trimpath -o "..\build\caddy-panel-windows-amd64.exe" .
+go -C src build -trimpath -o "..\build\fnproxy-panel-windows-amd64.exe" .
 if errorlevel 1 (
     echo Build failed.
     exit /b 1
 )
 
-echo Build completed: build\caddy-panel-windows-amd64.exe
+echo Build completed: build\fnproxy-panel-windows-amd64.exe
 endlocal

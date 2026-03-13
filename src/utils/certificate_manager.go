@@ -24,8 +24,8 @@ import (
 	"sync"
 	"time"
 
-	"caddy-panel/config"
-	"caddy-panel/models"
+	"fnproxy/config"
+	"fnproxy/models"
 
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge"
@@ -1257,15 +1257,15 @@ func (m *CertificateManager) ensureFallbackCertificate() {
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   "caddy-panel.local",
-			Organization: []string{"Caddy Panel"},
+			CommonName:   "fnproxy.local",
+			Organization: []string{"fnproxy"},
 		},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().AddDate(1, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost", "caddy-panel.local"},
+		DNSNames:              []string{"localhost", "fnproxy.local"},
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
