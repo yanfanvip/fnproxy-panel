@@ -702,6 +702,7 @@ async function drawNetworkChart(points = []) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: false,
             interaction: {
                 mode: 'index',
                 intersect: false
@@ -1672,6 +1673,19 @@ async function saveListener(id = null) {
 
 // 切换监听状态
 async function toggleListener(id, enable) {
+    // 查找当前监听器状态
+    const listenersData = await apiRequest('/listeners');
+    const listener = listenersData.success ? listenersData.data.find(l => l.id === id) : null;
+    const isRunning = listener?.running;
+    const actionText = isRunning ? '停止' : '启动';
+    const portText = listener?.port ? `端口 ${listener.port}` : '此监听';
+
+    const confirmed = await showConfirmModal(`确定要${actionText}${portText}吗？`, {
+        title: `${actionText}监听`,
+        confirmText: `确认${actionText}`
+    });
+    if (!confirmed) return;
+
     try {
         const data = await apiRequest(`/listeners/${id}/toggle`, { method: 'POST' });
         if (data.success) {
@@ -3182,6 +3196,26 @@ async function saveUser(id = null, currentUserRecord = null) {
 }
 
 async function toggleUser(id) {
+    const user = usersCache.find(u => u.id === id);
+    const isCurrentlyEnabled = user?.enabled !== false;
+    const actionText = isCurrentlyEnabled ? '禁用' : '启用';
+    const userName = user?.username || '此用户';
+
+    // 禁用时检查是否还有其他启用用户
+    if (isCurrentlyEnabled) {
+        const enabledCount = usersCache.filter(u => u.enabled !== false).length;
+        if (enabledCount <= 1) {
+            showToast('必须保留至少一个启用状态的用户', 'error');
+            return;
+        }
+    }
+
+    const confirmed = await showConfirmModal(`确定要${actionText}用户「${userName}」吗？`, {
+        title: `${actionText}用户`,
+        confirmText: `确认${actionText}`
+    });
+    if (!confirmed) return;
+
     try {
         const data = await apiRequest(`/users/${id}/toggle`, { method: 'POST' });
         if (data.success) {
@@ -3197,7 +3231,20 @@ async function toggleUser(id) {
 
 // 删除用户
 async function deleteUser(id) {
-    const confirmed = await showConfirmModal('确定要删除此用户吗？', {
+    const user = usersCache.find(u => u.id === id);
+    const userName = user?.username || '此用户';
+
+    // 检查删除后是否还有启用用户
+    const isTargetEnabled = user?.enabled !== false;
+    if (isTargetEnabled) {
+        const enabledCount = usersCache.filter(u => u.enabled !== false).length;
+        if (enabledCount <= 1) {
+            showToast('必须保留至少一个启用状态的用户，无法删除', 'error');
+            return;
+        }
+    }
+
+    const confirmed = await showConfirmModal(`确定要删除用户「${userName}」吗？`, {
         title: '删除用户',
         confirmText: '确认删除'
     });
@@ -3599,7 +3646,17 @@ async function toggleService(id) {
             return;
         }
 
-        const nextEnabled = current.data.enabled === false ? true : false;
+        const isCurrentlyEnabled = current.data.enabled !== false;
+        const actionText = isCurrentlyEnabled ? '关闭' : '开启';
+        const serviceName = current.data.name || '此服务规则';
+
+        const confirmed = await showConfirmModal(`确定要${actionText}「${serviceName}」吗？`, {
+            title: `${actionText}服务规则`,
+            confirmText: `确认${actionText}`
+        });
+        if (!confirmed) return;
+
+        const nextEnabled = !isCurrentlyEnabled;
         const updated = await apiRequest(`/services/${id}`, {
             method: 'PUT',
             body: JSON.stringify({
@@ -3898,21 +3955,21 @@ async function loadSecurityLogs(page = 1) {
             renderSecurityLogs(logsData.data.logs || []);
             renderSecurityLogsPagination(logsData.data.total || 0, page);
         } else {
-            showNotification(logsData.error || '加载安全日志失败', 'error');
+            showToast(logsData.error || '加载安全日志失败', 'error');
         }
         
         if (statsData.success) {
             renderSecurityLogsStats(statsData.data);
         }
     } catch (e) {
-        showNotification('加载安全日志失败: ' + e.message, 'error');
+        showToast('加载安全日志失败: ' + e.message, 'error');
     }
 }
 
 function renderSecurityLogs(logs) {
     const tbody = document.getElementById('securityLogsList');
     if (!logs || logs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #666;">暂无安全日志记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="security-logs-empty" style="text-align: center; color: #666;">暂无安全日志记录</td></tr>';
         return;
     }
     
@@ -3937,13 +3994,13 @@ function renderSecurityLogs(logs) {
         const statusText = log.success ? '成功' : '失败';
         
         return `<tr>
-            <td style="white-space: nowrap;">${time}</td>
+            <td style="white-space: nowrap; font-size: 10px;">${time}</td>
             <td><span class="badge">${typeLabel}</span></td>
-            <td><span class="${level.class}">${level.text}</span></td>
-            <td>${log.username || '-'}</td>
-            <td>${log.remote_addr || '-'}</td>
+            <td class="security-log-col-hide-mobile"><span class="${level.class}">${level.text}</span></td>
+            <td class="security-log-col-hide-mobile">${log.username || '-'}</td>
+            <td class="security-log-col-hide-mobile">${log.remote_addr || '-'}</td>
             <td>${log.action || '-'}</td>
-            <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(log.message)}">${escapeHtml(log.message || '-')}</td>
+            <td class="security-log-col-hide-mobile" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(log.message)}">${escapeHtml(log.message || '-')}</td>
             <td><span class="${statusClass}">${statusText}</span></td>
         </tr>`;
     }).join('');
@@ -4002,19 +4059,23 @@ function renderSecurityLogsPagination(total, currentPage) {
 }
 
 async function clearSecurityLogs() {
-    showConfirm('确定要清空所有安全日志吗？此操作不可恢复。', async () => {
-        try {
-            const data = await apiRequest('/security-logs', { method: 'DELETE' });
-            if (data.success) {
-                showNotification('安全日志已清空', 'success');
-                loadSecurityLogs();
-            } else {
-                showNotification(data.error || '清空失败', 'error');
-            }
-        } catch (e) {
-            showNotification('清空失败: ' + e.message, 'error');
-        }
+    const confirmed = await showConfirmModal('确定要清空所有安全日志吗？此操作不可恢复。', {
+        title: '清空安全日志',
+        confirmText: '确认清空'
     });
+    if (!confirmed) return;
+
+    try {
+        const data = await apiRequest('/security-logs', { method: 'DELETE' });
+        if (data.success) {
+            showToast('安全日志已清空', 'success');
+            loadSecurityLogs();
+        } else {
+            showToast(data.error || '清空失败', 'error');
+        }
+    } catch (e) {
+        showToast('清空失败: ' + e.message, 'error');
+    }
 }
 
 function escapeHtml(text) {

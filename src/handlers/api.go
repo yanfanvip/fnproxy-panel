@@ -113,6 +113,19 @@ func WriteSuccessWithMessage(w http.ResponseWriter, data interface{}, message st
 	WriteJSON(w, http.StatusOK, Response{Success: true, Data: data, Message: message})
 }
 
+// getRequestContext 获取请求上下文（用户名和IP）
+func getRequestContext(r *http.Request) (username, remoteAddr string) {
+	if claims, _ := utils.GetAuthClaimsFromRequest(r); claims != nil {
+		username = claims.Username
+	}
+	remoteAddr = r.RemoteAddr
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		remoteAddr = strings.TrimSpace(parts[0])
+	}
+	return
+}
+
 // StatusHandler 服务器状态处理器
 func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	status, err := utils.GetServerStatus()
@@ -193,6 +206,10 @@ func CreateListenerHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "新增端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("新增端口监听: %d (%s)", listener.Port, listener.Protocol), true, nil)
+
 	if message != "" {
 		WriteSuccessWithMessage(w, listener, message)
 		return
@@ -247,6 +264,10 @@ func UpdateListenerHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "修改端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("修改端口监听: %d", listener.Port), true, nil)
+
 	if message != "" {
 		WriteSuccessWithMessage(w, listener, message)
 		return
@@ -272,6 +293,10 @@ func DeleteListenerHandler(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "删除端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("删除端口监听: %d", listener.Port), true, nil)
 
 	WriteSuccess(w, nil)
 }
@@ -302,6 +327,9 @@ func ToggleListenerHandler(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// 记录安全日志
+		opUser, opAddr := getRequestContext(r)
+		security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "停止端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("停止端口监听: %d", listener.Port), true, nil)
 		WriteSuccess(w, updated)
 		return
 	}
@@ -315,6 +343,9 @@ func ToggleListenerHandler(w http.ResponseWriter, r *http.Request) {
 		WriteSuccessWithMessage(w, updated, fmt.Sprintf("监听已设为启用，但启动失败: %v", err))
 		return
 	}
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "启动端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("启动端口监听: %d", listener.Port), true, nil)
 	WriteSuccess(w, updated)
 }
 
@@ -530,6 +561,10 @@ func CreateUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "新增用户", user.Username, fmt.Sprintf("新增用户: %s", user.Username), true, nil)
+
 	user.Password = ""
 	WriteSuccess(w, user)
 }
@@ -589,6 +624,10 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "修改用户", user.Username, fmt.Sprintf("修改用户: %s", user.Username), true, nil)
+
 	user.Password = ""
 	WriteSuccess(w, user)
 }
@@ -609,12 +648,34 @@ func ToggleUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 如果要禁用用户，检查是否还有其他启用用户
+	if user.Enabled {
+		enabledCount := 0
+		for _, u := range users {
+			if u.Enabled {
+				enabledCount++
+			}
+		}
+		if enabledCount <= 1 {
+			WriteError(w, http.StatusBadRequest, "必须保留至少一个启用状态的用户")
+			return
+		}
+	}
+
 	user.Enabled = !user.Enabled
 	user.UpdatedAt = time.Now()
 	if err := config.GetManager().UpdateUser(*user); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	action := "启用用户"
+	if !user.Enabled {
+		action = "禁用用户"
+	}
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, action, user.Username, fmt.Sprintf("%s: %s", action, user.Username), true, nil)
 
 	user.Password = ""
 	WriteSuccess(w, user)
@@ -623,10 +684,38 @@ func ToggleUserHandler(w http.ResponseWriter, r *http.Request) {
 func DeleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/api/users/"):]
 
+	// 检查删除后是否还有启用用户
+	users := config.GetManager().GetUsers()
+	var targetUser *models.User
+	enabledCount := 0
+	for i := range users {
+		if users[i].ID == id {
+			targetUser = &users[i]
+		}
+		if users[i].Enabled {
+			enabledCount++
+		}
+	}
+
+	if targetUser == nil {
+		WriteError(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	// 如果要删除的是启用用户，检查是否是最后一个
+	if targetUser.Enabled && enabledCount <= 1 {
+		WriteError(w, http.StatusBadRequest, "必须保留至少一个启用状态的用户，无法删除")
+		return
+	}
+
 	if err := config.GetManager().DeleteUser(id); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "删除用户", targetUser.Username, fmt.Sprintf("删除用户: %s", targetUser.Username), true, nil)
 
 	WriteSuccess(w, nil)
 }

@@ -120,6 +120,11 @@ func CreateSSHConnectionHandler(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "新增SSH连接", conn.Name, fmt.Sprintf("新增SSH连接: %s (%s@%s:%d)", conn.Name, conn.Username, conn.Host, conn.Port), true, nil)
+
 	conn.Password = ""
 	WriteSuccess(w, conn)
 }
@@ -189,6 +194,10 @@ func UpdateSSHConnectionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "修改SSH连接", conn.Name, fmt.Sprintf("修改SSH连接: %s", conn.Name), true, nil)
+
 	conn.Password = ""
 	WriteSuccess(w, conn)
 }
@@ -196,10 +205,20 @@ func UpdateSSHConnectionHandler(w http.ResponseWriter, r *http.Request) {
 // DeleteSSHConnectionHandler 删除SSH连接
 func DeleteSSHConnectionHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/api/ssh-connections/"):]
+	conn := config.GetManager().GetSSHConnection(id)
 	if err := config.GetManager().DeleteSSHConnection(id); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	connName := id
+	if conn != nil {
+		connName = conn.Name
+	}
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "删除SSH连接", connName, fmt.Sprintf("删除SSH连接: %s", connName), true, nil)
+
 	WriteSuccess(w, nil)
 }
 

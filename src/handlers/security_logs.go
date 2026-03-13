@@ -1,20 +1,11 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
 	"caddy-panel/security"
 )
-
-// SecurityLogsResponse 安全日志响应
-type SecurityLogsResponse struct {
-	Logs     interface{} `json:"logs"`
-	Total    int         `json:"total"`
-	Page     int         `json:"page"`
-	PageSize int         `json:"page_size"`
-}
 
 // HandleGetSecurityLogs 获取安全日志列表
 func HandleGetSecurityLogs(w http.ResponseWriter, r *http.Request) {
@@ -40,29 +31,34 @@ func HandleGetSecurityLogs(w http.ResponseWriter, r *http.Request) {
 	logs, total := security.GetAuditLogger().QueryLogs(logType, level, keyword, page, pageSize)
 
 	// 返回响应
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(SecurityLogsResponse{
-		Logs:     logs,
-		Total:    total,
-		Page:     page,
-		PageSize: pageSize,
+	WriteSuccess(w, map[string]interface{}{
+		"logs":      logs,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
 	})
 }
 
 // HandleGetSecurityLogStats 获取安全日志统计
 func HandleGetSecurityLogStats(w http.ResponseWriter, r *http.Request) {
 	stats := security.GetAuditLogger().GetStats()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	WriteSuccess(w, map[string]interface{}{
+		"total":          stats["total"],
+		"by_type": map[string]int{
+			"oauth_login":    stats["oauth_login"],
+			"proxy_error":    stats["proxy_error"],
+			"ssh_connect":    stats["ssh_connect"],
+			"system_operate": stats["system_operate"],
+		},
+	})
 }
 
 // HandleClearSecurityLogs 清空安全日志
 func HandleClearSecurityLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 	security.GetAuditLogger().ClearLogs()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	WriteSuccess(w, nil)
 }

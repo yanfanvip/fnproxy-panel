@@ -11,6 +11,7 @@ import (
 
 	"caddy-panel/config"
 	"caddy-panel/models"
+	"caddy-panel/security"
 	"caddy-panel/utils"
 )
 
@@ -85,6 +86,10 @@ func CreateCertificateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "新增证书", created.Name, fmt.Sprintf("新增证书: %s (域名: %v)", created.Name, created.Domains), true, nil)
+
 	WriteSuccess(w, maskCertificateSecrets(*created))
 }
 
@@ -101,15 +106,30 @@ func UpdateCertificateHandler(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "修改证书", updated.Name, fmt.Sprintf("修改证书: %s", updated.Name), true, nil)
+
 	WriteSuccess(w, maskCertificateSecrets(*updated))
 }
 
 func DeleteCertificateHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/api/certificates/"):]
+	cert := config.GetManager().GetCertificate(id)
 	if err := utils.GetCertificateManager().DeleteCertificate(id); err != nil {
 		WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	certName := id
+	if cert != nil {
+		certName = cert.Name
+	}
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "删除证书", certName, fmt.Sprintf("删除证书: %s", certName), true, nil)
+
 	WriteSuccess(w, nil)
 }
 
@@ -120,6 +140,11 @@ func RenewCertificateHandler(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "续期证书", updated.Name, fmt.Sprintf("续期证书: %s", updated.Name), true, nil)
+
 	WriteSuccess(w, maskCertificateSecrets(*updated))
 }
 
