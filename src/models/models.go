@@ -33,7 +33,7 @@ type RuntimeStats struct {
 	LastSeenAt        time.Time `json:"last_seen_at"`
 }
 
-// ListenerRuntimeStats 端口监听运行时统计
+// ListenerRuntimeStats 网站管理运行时统计
 type ListenerRuntimeStats struct {
 	ListenerID string `json:"listener_id"`
 	Port       int    `json:"port"`
@@ -69,7 +69,7 @@ type AccessLogEntry struct {
 	Username     string    `json:"username"`
 }
 
-// PortListener 端口监听配置
+// PortListener 网站管理配置
 type PortListener struct {
 	ID        string    `json:"id"`
 	Port      int       `json:"port"`
@@ -343,6 +343,43 @@ type SecurityLogEntry struct {
 	Extra      map[string]any   `json:"extra,omitempty"`    // 额外信息
 }
 
+// FirewallRuleType 防火墙规则类型
+type FirewallRuleType string
+
+const (
+	FirewallRuleTypeIP       FirewallRuleType = "ip"       // IP/IP段
+	FirewallRuleTypeCountry FirewallRuleType = "country"   // 国家
+)
+
+// FirewallAction 防火墙规则动作
+type FirewallAction string
+
+const (
+	FirewallActionAllow FirewallAction = "allow"
+	FirewallActionDeny  FirewallAction = "deny"
+)
+
+// FirewallRule 防火墙规则
+type FirewallRule struct {
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`                   // 规则名称
+	Type        FirewallRuleType `json:"type"`                  // 规则类型
+	IPs         []string         `json:"ips,omitempty"`         // IP/IP段列表 (CIDR格式)
+	Countries   []string         `json:"countries,omitempty"`    // 国家代码 (如CN,US)
+	Action      FirewallAction   `json:"action"`                 // 允许/拒绝
+	Enabled     bool             `json:"enabled"`                // 是否启用
+	Priority    int              `json:"priority"`               // 优先级 (越小越高)
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+}
+
+// FirewallConfig 防火墙配置
+type FirewallConfig struct {
+	Enabled    bool           `json:"enabled"`      // 总体开关
+	DefaultDeny bool          `json:"default_deny"` // 默认拒绝 (未匹配时)
+	Rules      []FirewallRule `json:"rules"`        // 规则列表
+}
+
 // AppConfig 应用配置
 type AppConfig struct {
 	Global    GlobalConfig        `json:"global"`
@@ -351,4 +388,5 @@ type AppConfig struct {
 	Certs     []CertificateConfig `json:"certs"`
 	Users     []User              `json:"users"`
 	SSH       []SSHConnection     `json:"ssh"`
+	Firewall  *FirewallConfig    `json:"firewall,omitempty"`
 }

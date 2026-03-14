@@ -19,6 +19,73 @@ let modalHeightFrame = null;
 let authPublicKeyCache = null;
 let modalBusy = false;
 
+// 防火墙相关变量
+let firewallConfig = null;
+let firewallEnabled = false;
+let currentFirewallEditRule = null;
+let countrySelectorCallback = null;
+let tempSelectedCountries = [];
+let draggedFirewallRuleId = null;
+
+// 国家列表数据
+const countries = [
+    { code: 'CN', name: '中国', nameEn: 'China' },
+    { code: 'US', name: '美国', nameEn: 'United States' },
+    { code: 'GB', name: '英国', nameEn: 'United Kingdom' },
+    { code: 'DE', name: '德国', nameEn: 'Germany' },
+    { code: 'FR', name: '法国', nameEn: 'France' },
+    { code: 'JP', name: '日本', nameEn: 'Japan' },
+    { code: 'KR', name: '韩国', nameEn: 'South Korea' },
+    { code: 'RU', name: '俄罗斯', nameEn: 'Russia' },
+    { code: 'CA', name: '加拿大', nameEn: 'Canada' },
+    { code: 'AU', name: '澳大利亚', nameEn: 'Australia' },
+    { code: 'BR', name: '巴西', nameEn: 'Brazil' },
+    { code: 'IN', name: '印度', nameEn: 'India' },
+    { code: 'IT', name: '意大利', nameEn: 'Italy' },
+    { code: 'ES', name: '西班牙', nameEn: 'Spain' },
+    { code: 'MX', name: '墨西哥', nameEn: 'Mexico' },
+    { code: 'ID', name: '印度尼西亚', nameEn: 'Indonesia' },
+    { code: 'NL', name: '荷兰', nameEn: 'Netherlands' },
+    { code: 'SA', name: '沙特阿拉伯', nameEn: 'Saudi Arabia' },
+    { code: 'TR', name: '土耳其', nameEn: 'Turkey' },
+    { code: 'PL', name: '波兰', nameEn: 'Poland' },
+    { code: 'VN', name: '越南', nameEn: 'Vietnam' },
+    { code: 'TH', name: '泰国', nameEn: 'Thailand' },
+    { code: 'MY', name: '马来西亚', nameEn: 'Malaysia' },
+    { code: 'SG', name: '新加坡', nameEn: 'Singapore' },
+    { code: 'PH', name: '菲律宾', nameEn: 'Philippines' },
+    { code: 'PK', name: '巴基斯坦', nameEn: 'Pakistan' },
+    { code: 'BD', name: '孟加拉国', nameEn: 'Bangladesh' },
+    { code: 'EG', name: '埃及', nameEn: 'Egypt' },
+    { code: 'NG', name: '尼日利亚', nameEn: 'Nigeria' },
+    { code: 'ZA', name: '南非', nameEn: 'South Africa' },
+    { code: 'AR', name: '阿根廷', nameEn: 'Argentina' },
+    { code: 'CO', name: '哥伦比亚', nameEn: 'Colombia' },
+    { code: 'CL', name: '智利', nameEn: 'Chile' },
+    { code: 'PE', name: '秘鲁', nameEn: 'Peru' },
+    { code: 'VE', name: '委内瑞拉', nameEn: 'Venezuela' },
+    { code: 'SE', name: '瑞典', nameEn: 'Sweden' },
+    { code: 'NO', name: '挪威', nameEn: 'Norway' },
+    { code: 'DK', name: '丹麦', nameEn: 'Denmark' },
+    { code: 'FI', name: '芬兰', nameEn: 'Finland' },
+    { code: 'CH', name: '瑞士', nameEn: 'Switzerland' },
+    { code: 'AT', name: '奥地利', nameEn: 'Austria' },
+    { code: 'BE', name: '比利时', nameEn: 'Belgium' },
+    { code: 'IE', name: '爱尔兰', nameEn: 'Ireland' },
+    { code: 'PT', name: '葡萄牙', nameEn: 'Portugal' },
+    { code: 'GR', name: '希腊', nameEn: 'Greece' },
+    { code: 'CZ', name: '捷克', nameEn: 'Czech Republic' },
+    { code: 'RO', name: '罗马尼亚', nameEn: 'Romania' },
+    { code: 'HU', name: '匈牙利', nameEn: 'Hungary' },
+    { code: 'UA', name: '乌克兰', nameEn: 'Ukraine' },
+    { code: 'IL', name: '以色列', nameEn: 'Israel' },
+    { code: 'AE', name: '阿联酋', nameEn: 'United Arab Emirates' },
+    { code: 'NZ', name: '新西兰', nameEn: 'New Zealand' },
+    { code: 'TW', name: '台湾', nameEn: 'Taiwan' },
+    { code: 'HK', name: '香港', nameEn: 'Hong Kong' },
+    { code: 'MO', name: '澳门', nameEn: 'Macau' }
+];
+
 // 初始化
 function init() {
     bindEvents();
@@ -127,7 +194,7 @@ function loadChartLib() {
             return;
         }
         const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
+        script.src = 'vendor/chart.umd.min.js';
         script.onload = () => {
             if (window.Chart) {
                 resolve(window.Chart);
@@ -314,6 +381,9 @@ function showPage(page) {
         case 'settings':
             loadSettings();
             break;
+        case 'firewall':
+            loadFirewall();
+            break;
         case 'securityLogs':
             loadSecurityLogs();
             break;
@@ -323,10 +393,11 @@ function showPage(page) {
 function getPageTitle(page) {
     const titles = {
         dashboard: '首页',
-        listeners: '端口监听',
+        listeners: '网站管理',
         certificates: '证书管理',
         terminal: '终端管理',
         users: '用户管理',
+        firewall: '防火墙',
         securityLogs: '安全日志',
         settings: '设置'
     };
@@ -940,7 +1011,7 @@ async function loadDashboard() {
     }
 }
 
-// 加载端口监听
+// 加载网站管理
 async function loadListeners() {
     try {
         const [listenersData, metricsData] = await Promise.all([
@@ -954,7 +1025,7 @@ async function loadListeners() {
             
             // 如果没有端口，显示空状态
             if (listenersData.data.length === 0) {
-                container.innerHTML = '<div class="empty-state">暂无端口监听，点击右上角“添加监听”开始创建。</div>';
+                container.innerHTML = '<div class="empty-state">暂无网站管理，点击右上角“添加监听”开始创建。</div>';
                 return;
             }
 
@@ -1638,7 +1709,7 @@ function toggleDefaultServiceMode(mode) {
     renderDefaultServiceConfig();
 }
 
-// 保存端口监听
+// 保存网站管理
 async function saveListener(id = null) {
     captureDefaultServiceForm();
 
@@ -1794,8 +1865,8 @@ async function editListener(id) {
 
 // 删除监听
 async function deleteListener(id) {
-    const confirmed = await showConfirmModal('确定要删除此端口监听吗？该端口下的服务配置也会一并移除。', {
-        title: '删除端口监听',
+    const confirmed = await showConfirmModal('确定要删除此网站管理吗？该端口下的服务配置也会一并移除。', {
+        title: '删除网站管理',
         confirmText: '确认删除'
     });
     if (!confirmed) return;
@@ -1803,7 +1874,7 @@ async function deleteListener(id) {
     try {
         const data = await apiRequest(`/listeners/${id}`, { method: 'DELETE' });
         if (data.success) {
-            showToast('端口监听已删除', 'success');
+            showToast('网站管理已删除', 'success');
             loadListeners();
         } else {
             showToast(data.error || '删除失败', 'error');
@@ -3982,6 +4053,582 @@ function getAdvancedConfigPlaceholder(type) {
 }`;
     }
     return '{}';
+}
+
+// ======================== 防火墙 ========================
+
+async function loadFirewall() {
+    try {
+        const response = await apiRequest('/firewall');
+        if (!response.success) throw new Error(response.message || 'Failed to load firewall config');
+        firewallConfig = response.data;
+        renderFirewallPage();
+    } catch (error) {
+        showToast('加载防火墙配置失败: ' + error.message, 'error');
+    }
+}
+
+function renderFirewallPage() {
+    const rulesList = document.getElementById('firewallRulesList');
+    const emptyDiv = document.getElementById('firewallEmpty');
+
+    if (firewallConfig) {
+        firewallEnabled = firewallConfig.enabled;
+    } else {
+        firewallEnabled = false;
+        firewallConfig = { enabled: false, default_deny: false, rules: [] };
+    }
+
+    // 更新页面标题旁边的状态灯
+    const statusBadge = document.getElementById('firewallStatusBadge');
+    const statusLight = document.getElementById('firewallStatusLight');
+    if (statusBadge && statusLight) {
+        statusBadge.style.display = 'inline-flex';
+        if (firewallEnabled) {
+            statusLight.classList.remove('disabled');
+            statusLight.classList.add('enabled');
+        } else {
+            statusLight.classList.remove('enabled');
+            statusLight.classList.add('disabled');
+        }
+    }
+
+    // 更新启用/禁用按钮
+    const toggleBtn = document.getElementById('firewallToggleBtn');
+    const toggleIcon = document.getElementById('firewallToggleIcon');
+    if (toggleBtn && toggleIcon) {
+        if (firewallEnabled) {
+            toggleBtn.className = 'btn btn-warning icon-btn toolbar-action-btn';
+            toggleBtn.title = '停止防火墙';
+            toggleIcon.textContent = '⏸';
+        } else {
+            toggleBtn.className = 'btn btn-success icon-btn toolbar-action-btn';
+            toggleBtn.title = '启用防火墙';
+            toggleIcon.textContent = '▶';
+        }
+    }
+
+    const rules = firewallConfig.rules || [];
+    if (rules.length === 0) {
+        rulesList.innerHTML = '';
+        emptyDiv.style.display = 'block';
+    } else {
+        emptyDiv.style.display = 'none';
+        rulesList.innerHTML = rules.map((rule) => {
+            const target = renderFirewallTarget(rule);
+            return `
+            <tr class="firewall-sortable-row ${rule.enabled ? '' : 'firewall-row-disabled'}" draggable="true" data-rule-id="${rule.id}">
+                <td style="width:40px; text-align:center;">
+                    <button class="firewall-drag-handle" type="button" title="拖拽调整顺序">⋮⋮</button>
+                </td>
+                <td>${escapeHtml(rule.name)}</td>
+                <td class="firewall-col-mobile-hidden">${getFirewallTypeName(rule.type)}</td>
+                <td class="firewall-col-mobile-hidden"><span class="firewall-target-cell" title="${escapeHtml(target)}">${escapeHtml(target)}</span></td>
+                <td><span class="firewall-action-badge ${rule.action}">${rule.action === 'allow' ? '允许' : '拒绝'}</span></td>
+                <td><span class="firewall-status-badge-row ${rule.enabled ? 'enabled' : 'disabled'}">${rule.enabled ? '已启用' : '已禁用'}</span></td>
+                <td>
+                    <div class="firewall-action-cell">
+                        <button class="btn ${rule.enabled ? 'btn-warning' : 'btn-success'} icon-btn" title="${rule.enabled ? '禁用' : '启用'}" onclick="toggleFirewallRuleEnabled('${rule.id}')">${rule.enabled ? '⏸' : '▶'}</button>
+                        <button class="btn btn-primary icon-btn" title="编辑" onclick="editFirewallRule('${rule.id}')">✏️</button>
+                        <button class="btn btn-danger icon-btn" title="删除" onclick="deleteFirewallRule('${rule.id}')">🗑</button>
+                    </div>
+                </td>
+            </tr>`;
+        }).join('');
+    }
+    
+    // 绑定拖拽事件
+    setTimeout(() => bindFirewallSortHandlers(), 0);
+}
+
+function getFirewallTypeName(type) {
+    const typeNames = {
+        'ip': 'IP/IP段',
+        'country': '国家',
+        'china': '中国大陆境内',
+        'outside_china': '中国大陆境外',
+        'all': '全部IP'
+    };
+    return typeNames[type] || type;
+}
+
+function renderFirewallTarget(rule) {
+    if (rule.type === 'country') {
+        const countryNames = (rule.countries || []).map(c => {
+            const country = countries.find(ct => ct.code === c);
+            return country ? country.name : c;
+        });
+        return escapeHtml(countryNames.join(', ')) || '-';
+    } else if (rule.type === 'china') {
+        return '中国大陆';
+    } else if (rule.type === 'outside_china') {
+        return '中国大陆境外';
+    } else if (rule.type === 'all') {
+        return '全部IP';
+    } else {
+        return escapeHtml((rule.ips || []).join(', ')) || '-';
+    }
+}
+
+async function toggleFirewallEnabled() {
+    const willEnable = !firewallEnabled;
+    const actionText = willEnable ? '启用' : '停止';
+    const confirmed = await showConfirmModal(`确定要${actionText}防火墙吗？`, {
+        title: `${actionText}防火墙`,
+        confirmText: `确认${actionText}`
+    });
+    if (!confirmed) return;
+
+    firewallEnabled = willEnable;
+    firewallConfig.enabled = firewallEnabled;
+    try {
+        const response = await apiRequest('/firewall', {
+            method: 'POST',
+            body: JSON.stringify(firewallConfig)
+        });
+        if (!response.success) throw new Error(response.message);
+        showToast(firewallEnabled ? '防火墙已启用' : '防火墙已停止', 'success');
+        renderFirewallPage();
+    } catch (error) {
+        showToast('更新防火墙状态失败: ' + error.message, 'error');
+        loadFirewall();
+    }
+}
+
+function showDefaultRuleDialog() {
+    setModalVariant('medium');
+    document.getElementById('modalTitle').textContent = '默认规则配置';
+    document.getElementById('modalBody').innerHTML = `
+        <div class="form-group">
+            <label>默认访问规则</label>
+            <div style="display: flex; gap: 16px; flex-direction: column;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px;">
+                    <input type="radio" name="defaultRule" value="allow" ${!firewallConfig.default_deny ? 'checked' : ''}>
+                    <div>
+                        <div style="font-weight: 500;">默认允许</div>
+                        <div style="font-size: 12px; color: #666;">未匹配任何规则时，允许访问</div>
+                    </div>
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px;">
+                    <input type="radio" name="defaultRule" value="deny" ${firewallConfig.default_deny ? 'checked' : ''}>
+                    <div>
+                        <div style="font-weight: 500;">默认拒绝</div>
+                        <div style="font-size: 12px; color: #666;">未匹配任何规则时，拒绝访问</div>
+                    </div>
+                </label>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalConfirm').textContent = '保存';
+    document.getElementById('modalConfirm').onclick = saveDefaultRule;
+    document.getElementById('modal').classList.add('active');
+}
+
+async function saveDefaultRule() {
+    const defaultRule = document.querySelector('input[name="defaultRule"]:checked').value;
+    firewallConfig.default_deny = defaultRule === 'deny';
+    try {
+        const response = await apiRequest('/firewall', {
+            method: 'POST',
+            body: JSON.stringify(firewallConfig)
+        });
+        if (!response.success) throw new Error(response.message);
+        showToast('默认规则已保存', 'success');
+        closeModal();
+    } catch (error) {
+        showToast('保存默认规则失败: ' + error.message, 'error');
+    }
+}
+
+// 拖拽排序相关函数
+let draggedFirewallDropAfter = false;
+
+function bindFirewallSortHandlers() {
+    const rows = document.querySelectorAll('#firewallRulesList tr[data-rule-id]');
+    rows.forEach(row => {
+        row.addEventListener('dragstart', () => {
+            draggedFirewallRuleId = row.dataset.ruleId || null;
+            draggedFirewallDropAfter = false;
+            row.classList.add('dragging');
+        });
+        row.addEventListener('dragend', () => {
+            clearFirewallDragState();
+        });
+        row.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            const rect = row.getBoundingClientRect();
+            const halfway = rect.top + rect.height / 2;
+            draggedFirewallDropAfter = e.clientY >= halfway;
+            row.classList.toggle('drag-over-top', !draggedFirewallDropAfter);
+            row.classList.toggle('drag-over-bottom', draggedFirewallDropAfter);
+        });
+        row.addEventListener('dragleave', () => {
+            row.classList.remove('drag-over-top', 'drag-over-bottom');
+        });
+        row.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            const targetId = row.dataset.ruleId || '';
+            row.classList.remove('drag-over-top', 'drag-over-bottom');
+            if (!draggedFirewallRuleId || !targetId || draggedFirewallRuleId === targetId) {
+                clearFirewallDragState();
+                return;
+            }
+            
+            // 移动规则
+            const rules = firewallConfig.rules || [];
+            const draggedIndex = rules.findIndex(r => r.id === draggedFirewallRuleId);
+            const targetIndex = rules.findIndex(r => r.id === targetId);
+            
+            if (draggedIndex === -1 || targetIndex === -1) {
+                clearFirewallDragState();
+                return;
+            }
+            
+            const [draggedRule] = rules.splice(draggedIndex, 1);
+            let nextIndex = targetIndex;
+            if (draggedIndex < targetIndex) {
+                nextIndex -= 1;
+            }
+            if (draggedFirewallDropAfter) {
+                nextIndex += 1;
+            }
+            rules.splice(Math.max(0, nextIndex), 0, draggedRule);
+            
+            // 更新优先级
+            rules.forEach((rule, index) => {
+                rule.priority = index + 1;
+            });
+            
+            firewallConfig.rules = rules;
+            clearFirewallDragState();
+            
+            // 重新渲染并保存
+            renderFirewallPage();
+            try {
+                const response = await apiRequest('/firewall', {
+                    method: 'POST',
+                    body: JSON.stringify(firewallConfig)
+                });
+                if (!response.success) throw new Error(response.message);
+                showToast('规则顺序已更新', 'success');
+            } catch (error) {
+                showToast('保存规则顺序失败: ' + error.message, 'error');
+                loadFirewall();
+            }
+        });
+    });
+}
+
+function clearFirewallDragState() {
+    draggedFirewallRuleId = null;
+    draggedFirewallDropAfter = false;
+    document.querySelectorAll('#firewallRulesList tr').forEach(row => {
+        row.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+    });
+}
+
+function showAddFirewallRuleDialog() {
+    currentFirewallEditRule = null;
+    showFirewallRuleDialog();
+}
+
+function editFirewallRule(id) {
+    const rule = firewallConfig.rules.find(r => r.id === id);
+    if (!rule) {
+        showToast('规则不存在', 'error');
+        return;
+    }
+    currentFirewallEditRule = rule;
+    showFirewallRuleDialog(rule);
+}
+
+function showFirewallRuleDialog(rule = null) {
+    setModalVariant('medium');
+    const isEdit = !!rule;
+    document.getElementById('modalTitle').textContent = isEdit ? '编辑防火墙规则' : '添加防火墙规则';
+
+    const ruleType = rule?.type || 'ip';
+    const selectedCountries = rule?.countries || [];
+    const selectedIPs = rule?.ips || [];
+
+    document.getElementById('modalBody').innerHTML = `
+        <div class="form-group">
+            <label>规则名称 *</label>
+            <input type="text" id="firewallRuleName" class="form-control" value="${escapeHtml(rule?.name || '')}" placeholder="例如：仅内网可访问">
+        </div>
+        <div class="form-group">
+            <label>规则类型 *</label>
+            <select id="firewallRuleType" class="form-control" onchange="onFirewallRuleTypeChange()">
+                <option value="ip" ${ruleType === 'ip' ? 'selected' : ''}>IP/IP段</option>
+                <option value="all" ${ruleType === 'all' ? 'selected' : ''}>全部IP</option>
+                <option value="china" ${ruleType === 'china' ? 'selected' : ''}>中国大陆境内</option>
+                <option value="outside_china" ${ruleType === 'outside_china' ? 'selected' : ''}>中国大陆境外</option>
+                <option value="country" ${ruleType === 'country' ? 'selected' : ''}>自定义位置</option>
+            </select>
+        </div>
+        <div class="form-group" id="firewallIPGroup" style="${!['ip'].includes(ruleType) ? 'display:none' : ''}">
+            <label>IP地址/段 *</label>
+            <textarea id="firewallRuleIPs" class="form-control" rows="4" placeholder="每行一个IP或CIDR，例如：192.168.1.0/24
+10.0.0.1">${escapeHtml(selectedIPs.join('\n'))}</textarea>
+            <small class="helper-text">支持CIDR格式，如 192.168.1.0/24</small>
+        </div>
+        <div class="form-group" id="firewallCountryGroup" style="${ruleType !== 'country' ? 'display:none' : ''}">
+            <label>国家 *</label>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <button type="button" class="btn" onclick="openCountrySelector()">选择国家</button>
+                <span id="selectedCountriesText" style="color: #666; font-size: 12px;">${selectedCountries.length > 0 ? selectedCountries.map(c => {
+                    const country = countries.find(ct => ct.code === c);
+                    return country ? country.name : c;
+                }).join(', ') : '未选择'}</span>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>访问控制 *</label>
+            <div style="display: flex; gap: 16px;">
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                    <input type="radio" name="firewallAction" value="allow" ${(rule?.action || 'allow') === 'allow' ? 'checked' : ''}>
+                    <span>允许</span>
+                </label>
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                    <input type="radio" name="firewallAction" value="deny" ${rule?.action === 'deny' ? 'checked' : ''}>
+                    <span>拒绝</span>
+                </label>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>规则状态</label>
+            <div style="display: flex; gap: 16px;">
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                    <input type="radio" name="firewallEnabled" value="true" ${(rule?.enabled !== false) ? 'checked' : ''}>
+                    <span>启用</span>
+                </label>
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                    <input type="radio" name="firewallEnabled" value="false" ${rule?.enabled === false ? 'checked' : ''}>
+                    <span>禁用</span>
+                </label>
+            </div>
+        </div>
+    `;
+
+    if (ruleType === 'country') {
+        tempSelectedCountries = [...selectedCountries];
+    } else {
+        tempSelectedCountries = [];
+    }
+
+    const confirmBtn = document.getElementById('modalConfirm');
+    confirmBtn.textContent = isEdit ? '保存' : '添加';
+    confirmBtn.onclick = saveFirewallRule;
+
+    document.getElementById('modal').classList.add('active');
+}
+
+function onFirewallRuleTypeChange() {
+    const type = document.getElementById('firewallRuleType').value;
+    document.getElementById('firewallIPGroup').style.display = type === 'ip' ? 'block' : 'none';
+    document.getElementById('firewallCountryGroup').style.display = type === 'country' ? 'block' : 'none';
+}
+
+function openCountrySelector() {
+    tempSelectedCountries = tempSelectedCountries || [];
+    countrySelectorCallback = (selected) => {
+        tempSelectedCountries = selected;
+        const text = selected.length > 0 ? selected.map(c => {
+            const country = countries.find(ct => ct.code === c);
+            return country ? country.name : c;
+        }).join(', ') : '未选择';
+        document.getElementById('selectedCountriesText').textContent = text;
+    };
+    showCountrySelectorModal(tempSelectedCountries);
+}
+
+async function saveFirewallRule() {
+    const name = document.getElementById('firewallRuleName').value.trim();
+    const type = document.getElementById('firewallRuleType').value;
+    const action = document.querySelector('input[name="firewallAction"]:checked').value;
+
+    if (!name) {
+        showToast('请输入规则名称', 'error');
+        return;
+    }
+
+    let ips = [];
+    let ruleCountries = [];
+
+    if (type === 'ip') {
+        const ipText = document.getElementById('firewallRuleIPs').value.trim();
+        if (!ipText) {
+            showToast('请输入IP地址或网段', 'error');
+            return;
+        }
+        ips = ipText.split('\n').map(s => s.trim()).filter(s => s);
+    } else if (type === 'country') {
+        ruleCountries = tempSelectedCountries || [];
+        if (ruleCountries.length === 0) {
+            showToast('请选择国家', 'error');
+            return;
+        }
+    }
+
+    // 计算新规则的优先级
+    const existingRules = firewallConfig.rules || [];
+    const maxPriority = existingRules.length > 0 ? Math.max(...existingRules.map(r => r.priority || 0)) : 0;
+
+    const rule = {
+        id: currentFirewallEditRule?.id || '',
+        name,
+        type,
+        action,
+        priority: currentFirewallEditRule?.priority || (maxPriority + 1),
+        enabled: document.querySelector('input[name="firewallEnabled"]:checked')?.value !== 'false',
+        ips: type === 'ip' ? ips : undefined,
+        countries: type === 'country' ? ruleCountries : undefined,
+        created_at: currentFirewallEditRule?.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString()
+    };
+
+    try {
+        let url = '/firewall/rules';
+        let method = 'POST';
+        if (currentFirewallEditRule) {
+            url = `/firewall/rules/${rule.id}`;
+            method = 'PUT';
+        }
+
+        const response = await apiRequest(url, {
+            method,
+            body: JSON.stringify(rule)
+        });
+
+        if (!response.success) {
+            throw new Error(response.message || '保存失败');
+        }
+
+        showToast(currentFirewallEditRule ? '规则已更新' : '规则已添加', 'success');
+        closeModal();
+        loadFirewall();
+    } catch (error) {
+        showToast('保存规则失败: ' + error.message, 'error');
+    }
+}
+
+async function toggleFirewallRuleEnabled(id) {
+    const rule = firewallConfig.rules.find(r => r.id === id);
+    if (!rule) return;
+
+    const willEnable = !rule.enabled;
+    const actionText = willEnable ? '启用' : '禁用';
+    const confirmed = await showConfirmModal(`确定要${actionText}规则「${rule.name}」吗？`, {
+        title: `${actionText}规则`,
+        confirmText: `确认${actionText}`
+    });
+    if (!confirmed) return;
+
+    rule.enabled = willEnable;
+    try {
+        const response = await apiRequest(`/firewall/rules/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(rule)
+        });
+        if (!response.success) throw new Error(response.message);
+        showToast(rule.enabled ? '规则已启用' : '规则已禁用', 'success');
+        renderFirewallPage();
+    } catch (error) {
+        showToast('更新规则状态失败: ' + error.message, 'error');
+        loadFirewall();
+    }
+}
+
+async function deleteFirewallRule(id) {
+    const confirmed = await showConfirmModal('确定要删除这条防火墙规则吗？', {
+        title: '删除规则',
+        confirmText: '确认删除'
+    });
+    if (!confirmed) return;
+    try {
+        const response = await apiRequest(`/firewall/rules/${id}`, {
+            method: 'DELETE'
+        });
+        if (!response.success) {
+            throw new Error(response.message || '删除失败');
+        }
+        showToast('规则已删除', 'success');
+        loadFirewall();
+    } catch (error) {
+        showToast('删除规则失败: ' + error.message, 'error');
+    }
+}
+
+// 国家选择器函数
+function showCountrySelectorModal(selectedCountries = []) {
+    tempSelectedCountries = [...selectedCountries];
+    const modal = document.getElementById('countrySelectorModal');
+    const content = modal.querySelector('.modal-content');
+
+    document.getElementById('countrySearchInput').value = '';
+    renderCountryList(countries, tempSelectedCountries);
+    updateSelectedCountriesDisplay();
+
+    modal.classList.add('active');
+
+    const confirmBtn = document.getElementById('countrySelectorConfirm');
+    confirmBtn.onclick = () => {
+        if (countrySelectorCallback) {
+            countrySelectorCallback(tempSelectedCountries);
+        }
+        closeCountrySelectorModal();
+    };
+}
+
+function closeCountrySelectorModal() {
+    document.getElementById('countrySelectorModal').classList.remove('active');
+    countrySelectorCallback = null;
+    tempSelectedCountries = [];
+}
+
+function renderCountryList(countryList, selected) {
+    const container = document.getElementById('countryListContent');
+    container.innerHTML = countryList.map(c => `
+        <label style="display: flex; align-items: center; padding: 8px 16px; cursor: pointer; hover: background: #f5f5f5;">
+            <input type="checkbox" value="${c.code}" ${selected.includes(c.code) ? 'checked' : ''} onchange="onCountryCheckboxChange(this)" style="margin-right: 10px;">
+            <span>${c.name} (${c.nameEn})</span>
+        </label>
+    `).join('');
+}
+
+function onCountryCheckboxChange(checkbox) {
+    const code = checkbox.value;
+    if (checkbox.checked) {
+        if (!tempSelectedCountries.includes(code)) {
+            tempSelectedCountries.push(code);
+        }
+    } else {
+        tempSelectedCountries = tempSelectedCountries.filter(c => c !== code);
+    }
+    updateSelectedCountriesDisplay();
+}
+
+function updateSelectedCountriesDisplay() {
+    const display = document.getElementById('selectedCountriesDisplay');
+    if (tempSelectedCountries.length === 0) {
+        display.textContent = '已选择: 0 个国家';
+    } else {
+        const names = tempSelectedCountries.map(c => {
+            const country = countries.find(ct => ct.code === c);
+            return country ? country.name : c;
+        });
+        display.textContent = '已选择: ' + names.join(', ');
+    }
+}
+
+function filterCountries() {
+    const search = document.getElementById('countrySearchInput').value.toLowerCase();
+    const filtered = countries.filter(c =>
+        c.name.toLowerCase().includes(search) ||
+        c.nameEn.toLowerCase().includes(search) ||
+        c.code.toLowerCase().includes(search)
+    );
+    renderCountryList(filtered, tempSelectedCountries);
 }
 
 // ======================== 安全日志 ========================

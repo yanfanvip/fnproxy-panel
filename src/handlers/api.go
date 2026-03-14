@@ -136,7 +136,7 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	WriteSuccess(w, status)
 }
 
-// ListenerHandlers 端口监听处理器
+// ListenerHandlers 网站管理处理器
 func ListListenersHandler(w http.ResponseWriter, r *http.Request) {
 	listeners := config.GetManager().GetListeners()
 	type listenerListItem struct {
@@ -208,7 +208,7 @@ func CreateListenerHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 记录安全日志
 	opUser, opAddr := getRequestContext(r)
-	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "新增端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("新增端口监听: %d (%s)", listener.Port, listener.Protocol), true, nil)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "新增网站管理", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("新增网站管理: %d (%s)", listener.Port, listener.Protocol), true, nil)
 
 	if message != "" {
 		WriteSuccessWithMessage(w, listener, message)
@@ -266,7 +266,7 @@ func UpdateListenerHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 记录安全日志
 	opUser, opAddr := getRequestContext(r)
-	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "修改端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("修改端口监听: %d", listener.Port), true, nil)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "修改网站管理", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("修改网站管理: %d", listener.Port), true, nil)
 
 	if message != "" {
 		WriteSuccessWithMessage(w, listener, message)
@@ -296,7 +296,7 @@ func DeleteListenerHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 记录安全日志
 	opUser, opAddr := getRequestContext(r)
-	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "删除端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("删除端口监听: %d", listener.Port), true, nil)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "删除网站管理", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("删除网站管理: %d", listener.Port), true, nil)
 
 	WriteSuccess(w, nil)
 }
@@ -336,7 +336,7 @@ func ToggleListenerHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		// 记录安全日志
 		opUser, opAddr := getRequestContext(r)
-		security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "停止端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("停止端口监听: %d", listener.Port), true, nil)
+		security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "停止网站管理", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("停止网站管理: %d", listener.Port), true, nil)
 		WriteSuccess(w, updated)
 		return
 	}
@@ -352,7 +352,7 @@ func ToggleListenerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// 记录安全日志
 	opUser, opAddr := getRequestContext(r)
-	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "启动端口监听", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("启动端口监听: %d", listener.Port), true, nil)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "启动网站管理", fmt.Sprintf("%d", listener.Port), fmt.Sprintf("启动网站管理: %d", listener.Port), true, nil)
 	WriteSuccess(w, updated)
 }
 
@@ -410,6 +410,10 @@ func CreateServiceHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "新增端口规则", service.Name, fmt.Sprintf("新增端口规则: %s", service.Name), true, nil)
+
 	WriteSuccess(w, service)
 }
 
@@ -442,6 +446,10 @@ func UpdateServiceHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "更新端口规则", service.Name, fmt.Sprintf("更新端口规则: %s", service.Name), true, nil)
+
 	WriteSuccess(w, service)
 }
 
@@ -464,6 +472,10 @@ func DeleteServiceHandler(w http.ResponseWriter, r *http.Request) {
 		WriteSuccessWithMessage(w, nil, fmt.Sprintf("规则已删除，但端口未运行: %v", err))
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, "删除端口规则", service.Name, fmt.Sprintf("删除端口规则: %s", service.Name), true, nil)
 
 	WriteSuccess(w, nil)
 }
@@ -515,6 +527,15 @@ func ToggleServiceHandler(w http.ResponseWriter, r *http.Request) {
 		WriteSuccessWithMessage(w, service, fmt.Sprintf("状态已切换，但端口未运行: %v", err))
 		return
 	}
+
+	// 记录安全日志
+	opUser, opAddr := getRequestContext(r)
+	toggleAction := "启用端口规则"
+	if !service.Enabled {
+		toggleAction = "禁用端口规则"
+	}
+	security.GetAuditLogger().LogSystemOperate(opUser, opAddr, toggleAction, service.Name, fmt.Sprintf("%s: %s", toggleAction, service.Name), true, nil)
+
 	WriteSuccess(w, service)
 }
 

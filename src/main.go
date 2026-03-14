@@ -137,7 +137,7 @@ func main() {
 	apiMux.HandleFunc("/api/logs/listeners/", handlers.ListenerLogsHandler)
 	apiMux.HandleFunc("/api/logs/services/", handlers.ServiceLogsHandler)
 
-	// 端口监听管理
+	// 网站管理
 	apiMux.HandleFunc("/api/listeners", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -383,6 +383,35 @@ func main() {
 	})
 	apiMux.HandleFunc("/api/security-logs/stats", handlers.HandleGetSecurityLogStats)
 
+	// 防火墙
+	apiMux.HandleFunc("/api/firewall", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handlers.HandleGetFirewallConfig(w, r)
+		case http.MethodPost:
+			handlers.HandleUpdateFirewallConfig(w, r)
+		default:
+			handlers.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	})
+	apiMux.HandleFunc("/api/firewall/rules", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handlers.HandleAddFirewallRule(w, r)
+		} else {
+			handlers.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	})
+	apiMux.HandleFunc("/api/firewall/rules/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			handlers.HandleUpdateFirewallRule(w, r)
+		case http.MethodDelete:
+			handlers.HandleDeleteFirewallRule(w, r)
+		default:
+			handlers.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	})
+
 	// 服务器重启
 	apiMux.HandleFunc("/api/restart", handlers.RestartServerHandler)
 
@@ -391,6 +420,7 @@ func main() {
 
 	// 应用中间件
 	var handler http.Handler = apiMux
+	handler = middleware.FirewallMiddleware(handler)
 	handler = middleware.AuthMiddleware(handler)
 	handler = middleware.CORSMiddleware(handler)
 	handler = middleware.LoggingMiddleware(handler)

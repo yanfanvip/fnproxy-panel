@@ -26,6 +26,11 @@ func cloneAppConfig(cfg models.AppConfig) models.AppConfig {
 	cfg.Certs = append([]models.CertificateConfig(nil), cfg.Certs...)
 	cfg.Users = append([]models.User(nil), cfg.Users...)
 	cfg.SSH = append([]models.SSHConnection(nil), cfg.SSH...)
+	if cfg.Firewall != nil {
+		fw := *cfg.Firewall
+		fw.Rules = append([]models.FirewallRule(nil), cfg.Firewall.Rules...)
+		cfg.Firewall = &fw
+	}
 	return cfg
 }
 
@@ -630,6 +635,102 @@ func (m *Manager) DeleteSSHConnection(id string) error {
 	for i, conn := range m.config.SSH {
 		if conn.ID == id {
 			m.config.SSH = append(m.config.SSH[:i], m.config.SSH[i+1:]...)
+			return m.Save()
+		}
+	}
+	return nil
+}
+
+// GetFirewallConfig 获取防火墙配置
+func (m *Manager) GetFirewallConfig() *models.FirewallConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.config.Firewall == nil {
+		return &models.FirewallConfig{
+			Enabled:     false,
+			DefaultDeny: false,
+			Rules:       []models.FirewallRule{},
+		}
+	}
+	fw := *m.config.Firewall
+	fw.Rules = append([]models.FirewallRule(nil), m.config.Firewall.Rules...)
+	return &fw
+}
+
+// LoadFirewallConfig 获取防火墙配置（从主配置中读取）
+func (m *Manager) LoadFirewallConfig() (*models.FirewallConfig, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.config.Firewall == nil {
+		m.config.Firewall = &models.FirewallConfig{
+			Enabled:     false,
+			DefaultDeny: false,
+			Rules:       []models.FirewallRule{},
+		}
+	}
+	fw := *m.config.Firewall
+	fw.Rules = append([]models.FirewallRule(nil), m.config.Firewall.Rules...)
+	return &fw, nil
+}
+
+// SaveFirewallConfig 保存防火墙配置到主配置文件
+func (m *Manager) SaveFirewallConfig(config *models.FirewallConfig) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config.Firewall = config
+	return m.Save()
+}
+
+// UpdateFirewallConfig 更新防火墙配置
+func (m *Manager) UpdateFirewallConfig(config models.FirewallConfig) error {
+	return m.SaveFirewallConfig(&config)
+}
+
+// AddFirewallRule 添加防火墙规则
+func (m *Manager) AddFirewallRule(rule models.FirewallRule) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.config.Firewall == nil {
+		m.config.Firewall = &models.FirewallConfig{
+			Enabled:     false,
+			DefaultDeny: false,
+			Rules:       []models.FirewallRule{},
+		}
+	}
+	rule.CreatedAt = time.Now()
+	rule.UpdatedAt = time.Now()
+	m.config.Firewall.Rules = append(m.config.Firewall.Rules, rule)
+	return m.Save()
+}
+
+// UpdateFirewallRule 更新防火墙规则
+func (m *Manager) UpdateFirewallRule(rule models.FirewallRule) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.config.Firewall == nil {
+		return nil
+	}
+	for i := range m.config.Firewall.Rules {
+		if m.config.Firewall.Rules[i].ID == rule.ID {
+			rule.CreatedAt = m.config.Firewall.Rules[i].CreatedAt
+			rule.UpdatedAt = time.Now()
+			m.config.Firewall.Rules[i] = rule
+			return m.Save()
+		}
+	}
+	return nil
+}
+
+// DeleteFirewallRule 删除防火墙规则
+func (m *Manager) DeleteFirewallRule(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.config.Firewall == nil {
+		return nil
+	}
+	for i, rule := range m.config.Firewall.Rules {
+		if rule.ID == id {
+			m.config.Firewall.Rules = append(m.config.Firewall.Rules[:i], m.config.Firewall.Rules[i+1:]...)
 			return m.Save()
 		}
 	}

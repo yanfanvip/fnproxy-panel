@@ -457,7 +457,7 @@ func (m *CertificateManager) IssueACMECertificate(cert models.CertificateConfig)
 		cert.RenewBeforeDays = 30
 	}
 	if cert.ChallengeType == models.CertificateChallengeHTTP && !hasEnabledHTTP80Listener() {
-		return nil, errors.New("文件校验需要已启用的 HTTP 80 端口监听")
+		return nil, errors.New("文件校验需要已启用的 HTTP 80 网站管理")
 	}
 
 	if err := ensureCertificateDirs(); err != nil {
