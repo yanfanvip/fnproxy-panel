@@ -2,7 +2,9 @@ package fnproxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"io"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -32,6 +34,7 @@ import (
 	"fnproxy/utils"
 
 	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go/http3"
 )
 
 // Server 代理服务器管理
@@ -40,6 +43,7 @@ type Server struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
 	servers           map[string]*http.Server
+	h3servers         map[string]*http3.Server  // HTTP/3 服务器（QUIC）
 	routes            map[string][]serviceRoute // 动态路由表，按监听器ID分组
 	listeners         map[string]models.PortListener // 监听器配置缓存
 	proxies           map[string]*httputil.ReverseProxy
@@ -169,6 +173,7 @@ func GetServer() *Server {
 			ctx:               ctx,
 			cancel:            cancel,
 			servers:           make(map[string]*http.Server),
+			h3servers:         make(map[string]*http3.Server),
 			routes:            make(map[string][]serviceRoute),
 			listeners:         make(map[string]models.PortListener),
 			proxies:           make(map[string]*httputil.ReverseProxy),
@@ -208,8 +213,12 @@ func (s *Server) Stop() error {
 	for _, server := range s.servers {
 		server.Shutdown(context.Background())
 	}
+	for _, h3server := range s.h3servers {
+		h3server.Close()
+	}
 
 	s.servers = make(map[string]*http.Server)
+	s.h3servers = make(map[string]*http3.Server)
 	s.routes = make(map[string][]serviceRoute)
 	s.listeners = make(map[string]models.PortListener)
 	s.proxies = make(map[string]*httputil.ReverseProxy)
@@ -243,6 +252,11 @@ func (s *Server) StopListener(listenerID string) error {
 		}
 		delete(s.servers, listenerID)
 	}
+	// 停止 HTTP/3 服务器
+	if h3server, exists := s.h3servers[listenerID]; exists {
+		h3server.Close()
+		delete(s.h3servers, listenerID)
+	}
 	if snapshot, exists := s.lastGood[listenerID]; exists {
 		s.cleanupListenerProxiesLocked(snapshot.services)
 		delete(s.lastGood, listenerID)
@@ -259,6 +273,22 @@ func cloneServices(services []models.ServiceConfig) []models.ServiceConfig {
 	cloned := make([]models.ServiceConfig, len(services))
 	copy(cloned, services)
 	return cloned
+}
+
+// computeHTTPVersionSupport 从服务列表聊合 HTTP 版本支持：任一服务启用则监听器就启用
+func computeHTTPVersionSupport(services []models.ServiceConfig) (http2, http3 bool) {
+	for _, svc := range services {
+		if !svc.Enabled {
+			continue
+		}
+		if svc.HTTP2 {
+			http2 = true
+		}
+		if svc.HTTP3 {
+			http3 = true
+		}
+	}
+	return
 }
 
 func (s *Server) cleanupListenerProxiesLocked(services []models.ServiceConfig) {
@@ -290,21 +320,25 @@ func (s *Server) buildListenerRoutes(listener models.PortListener, services []mo
 	return routes, proxies, nil
 }
 
-func (s *Server) buildHTTPServer(listener models.PortListener) *http.Server {
-	addr := fmt.Sprintf(":%d", listener.Port)
-	listenerID := listener.ID
-
+// buildListenerHandler 构建监听器请求处理器（HTTP/1.1+HTTP/2 和 HTTP/3 共用同一套业务逻辑）
+func (s *Server) buildListenerHandler(listenerID string) http.Handler {
 	// 核心业务处理器（经过防火墙检查后执行）
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 动态获取监听器配置（用于 OAuth）
+		// 动态获取监听器配置（用于 OAuth 和 Alt-Svc 头广播）
 		s.mu.RLock()
 		currentListener, hasListener := s.listeners[listenerID]
 		routes := s.routes[listenerID]
+		_, h3Active := s.h3servers[listenerID]
 		s.mu.RUnlock()
 
 		if !hasListener {
 			http.NotFound(w, r)
 			return
+		}
+
+		// 如果 HTTP/3 服务器正在运行，通过 Alt-Svc 头通知客户端可升级到 QUIC
+		if h3Active {
+			w.Header().Set("Alt-Svc", fmt.Sprintf(`h3=":%d"; ma=86400`, currentListener.Port))
 		}
 
 		if s.handleOAuthRequest(currentListener, w, r) {
@@ -321,19 +355,23 @@ func (s *Server) buildHTTPServer(listener models.PortListener) *http.Server {
 	// 防火墙包裹核心处理器（优先级最高）
 	firewallHandler := utils.FirewallMiddleware(coreHandler)
 
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// ACME HTTP-01 证书验证请求必须绕过防火墙（公网可访问性要求）
+		if utils.GetCertificateManager().ServeHTTPChallenge(w, r) {
+			return
+		}
+		firewallHandler.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) buildHTTPServer(listener models.PortListener) *http.Server {
 	return &http.Server{
-		Addr: addr,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// ACME HTTP-01 证书验证请求必须绕过防火墙（公网可访问性要求）
-			if utils.GetCertificateManager().ServeHTTPChallenge(w, r) {
-				return
-			}
-			firewallHandler.ServeHTTP(w, r)
-		}),
+		Addr:    fmt.Sprintf(":%d", listener.Port),
+		Handler: s.buildListenerHandler(listener.ID),
 	}
 }
 
-func (s *Server) createNetListener(listener models.PortListener) (net.Listener, error) {
+func (s *Server) createNetListener(listener models.PortListener, http2 bool) (net.Listener, error) {
 	addr := fmt.Sprintf(":%d", listener.Port)
 	baseListener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -342,8 +380,14 @@ func (s *Server) createNetListener(listener models.PortListener) (net.Listener, 
 	if listener.Protocol != "https" {
 		return baseListener, nil
 	}
+	// 根据 HTTP2 开关决定 ALPN 协议列表
+	nextProtos := []string{"http/1.1"}
+	if http2 {
+		nextProtos = []string{"h2", "http/1.1"}
+	}
 	tlsConfig := &tls.Config{
 		GetCertificate: utils.GetCertificateManager().GetTLSCertificateForListener(listener.ID),
+		NextProtos:     nextProtos,
 	}
 	return tls.NewListener(baseListener, tlsConfig), nil
 }
@@ -356,13 +400,34 @@ func (s *Server) serveListener(server *http.Server, listener models.PortListener
 	}()
 }
 
+// startH3ServerLocked 启动 HTTP/3（QUIC）服务器，与 HTTP/1.1+HTTP/2 的 TCP 服务器并行运行于同一 UDP 端口
+// 调用前需持有写锁（mu.Lock）
+func (s *Server) startH3ServerLocked(listener models.PortListener) {
+	listenerID := listener.ID
+	tlsConfig := http3.ConfigureTLSConfig(&tls.Config{
+		GetCertificate: utils.GetCertificateManager().GetTLSCertificateForListener(listenerID),
+	})
+	h3server := &http3.Server{
+		Handler:   s.buildListenerHandler(listenerID),
+		TLSConfig: tlsConfig,
+		Addr:      fmt.Sprintf(":%d", listener.Port),
+	}
+	s.h3servers[listenerID] = h3server
+	go func() {
+		if err := h3server.ListenAndServe(); err != nil {
+			fmt.Printf("HTTP/3 服务器错误 端口 %d: %v\n", listener.Port, err)
+		}
+	}()
+}
+
 func (s *Server) restoreSnapshotLocked(snapshot listenerSnapshot) error {
 	routes, proxies, err := s.buildListenerRoutes(snapshot.listener, snapshot.services)
 	if err != nil {
 		return err
 	}
+	http2, http3 := computeHTTPVersionSupport(snapshot.services)
 	server := s.buildHTTPServer(snapshot.listener)
-	netListener, err := s.createNetListener(snapshot.listener)
+	netListener, err := s.createNetListener(snapshot.listener, http2)
 	if err != nil {
 		return err
 	}
@@ -372,6 +437,10 @@ func (s *Server) restoreSnapshotLocked(snapshot listenerSnapshot) error {
 	s.cleanupListenerProxiesLocked(snapshot.services)
 	for id, proxy := range proxies {
 		s.proxies[id] = proxy
+	}
+	// 恢复 HTTP/3 服务器（如果服务配置启用）
+	if http3 && snapshot.listener.Protocol == "https" {
+		s.startH3ServerLocked(snapshot.listener)
 	}
 	s.serveListener(server, snapshot.listener, netListener)
 	return nil
@@ -383,18 +452,37 @@ func (s *Server) applyListenerConfig(listener models.PortListener, services []mo
 		return err
 	}
 
+	// 从所有服务聊合有效的 HTTP 版本支持
+	effectiveHTTP2, effectiveHTTP3 := computeHTTPVersionSupport(services)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	previousSnapshot, hasPrevious := s.lastGood[listener.ID]
 
-	// 如果监听器已经在运行，只更新路由表，不重启服务器
+	// 如果监听器已经在运行
 	if _, exists := s.servers[listener.ID]; exists {
-		// 清理旧的代理
+		// 计算之前的有效 HTTP2
+		var prevHTTP2 bool
+		if hasPrevious {
+			prevHTTP2, _ = computeHTTPVersionSupport(previousSnapshot.services)
+		}
+
+		// HTTP2 发生变化时需要重建 TLS 监听器（ALPN NextProtos 已固定在握手层）
+		needTCPRestart := listener.Protocol == "https" && prevHTTP2 != effectiveHTTP2
+		if needTCPRestart {
+			s.servers[listener.ID].Shutdown(context.Background())
+			delete(s.servers, listener.ID)
+			if oldH3, hasOldH3 := s.h3servers[listener.ID]; hasOldH3 {
+				oldH3.Close()
+				delete(s.h3servers, listener.ID)
+			}
+		}
+
+		// 更新路由和代理
 		if hasPrevious {
 			s.cleanupListenerProxiesLocked(previousSnapshot.services)
 		}
-		// 更新路由表和代理（热更新，无需重启）
 		s.routes[listener.ID] = routes
 		s.listeners[listener.ID] = listener
 		for id, proxy := range proxies {
@@ -404,12 +492,42 @@ func (s *Server) applyListenerConfig(listener models.PortListener, services []mo
 			listener: listener,
 			services: cloneServices(services),
 		}
+
+		if needTCPRestart {
+			// 重建 TCP 监听器
+			server := s.buildHTTPServer(listener)
+			netListener, err := s.createNetListener(listener, effectiveHTTP2)
+			if err != nil {
+				if hasPrevious {
+					if rollbackErr := s.restoreSnapshotLocked(previousSnapshot); rollbackErr != nil {
+						return fmt.Errorf("重载失败: %v；回滚到上一次正确配置也失败: %v", err, rollbackErr)
+					}
+					return fmt.Errorf("重载失败，已回滚到上一次正确配置: %w", err)
+				}
+				return err
+			}
+			s.servers[listener.ID] = server
+			if effectiveHTTP3 && listener.Protocol == "https" {
+				s.startH3ServerLocked(listener)
+			}
+			s.serveListener(server, listener, netListener)
+			return nil
+		}
+
+		// 热更新 H3（无需重启 TCP）
+		if oldH3, hasOldH3 := s.h3servers[listener.ID]; hasOldH3 {
+			oldH3.Close()
+			delete(s.h3servers, listener.ID)
+		}
+		if effectiveHTTP3 && listener.Protocol == "https" {
+			s.startH3ServerLocked(listener)
+		}
 		return nil
 	}
 
 	// 监听器不存在，需要创建新的服务器
 	server := s.buildHTTPServer(listener)
-	netListener, err := s.createNetListener(listener)
+	netListener, err := s.createNetListener(listener, effectiveHTTP2)
 	if err != nil {
 		if hasPrevious {
 			if rollbackErr := s.restoreSnapshotLocked(previousSnapshot); rollbackErr != nil {
@@ -429,6 +547,9 @@ func (s *Server) applyListenerConfig(listener models.PortListener, services []mo
 	s.lastGood[listener.ID] = listenerSnapshot{
 		listener: listener,
 		services: cloneServices(services),
+	}
+	if effectiveHTTP3 && listener.Protocol == "https" {
+		s.startH3ServerLocked(listener)
 	}
 	s.serveListener(server, listener, netListener)
 	return nil
@@ -475,6 +596,7 @@ func (s *Server) createReverseProxyHandler(service models.ServiceConfig, proxies
 	}
 
 	var cfg models.ReverseProxyConfig
+	configData = mergeExtendJSON(configData, service.ExtendJSON)
 	if err := json.Unmarshal(configData, &cfg); err != nil {
 		return nil, err
 	}
@@ -542,14 +664,42 @@ func (s *Server) createReverseProxyHandler(service models.ServiceConfig, proxies
 			}
 		}
 
-		// 设置真实IP转发头（除非配置了信任上游代理头）
-		if !cfg.TrustProxyHeaders {
-			setForwardedHeaders(req, originalRemoteAddr, originalHost, originalTLS != nil)
+		// 真实IP转发
+		if cfg.HideRealIP {
+			// 主动清除所有IP相关转发头
+			req.Header.Del("X-Real-IP")
+			req.Header.Del("X-Forwarded-For")
+			req.Header.Del("X-Forwarded-Host")
+			req.Header.Del("X-Forwarded-Proto")
+		} else if !cfg.TrustProxyHeaders {
+			// 确定真实客户端IP
+			realAddr := originalRemoteAddr
+			if cfg.ClientIPHeader != "" {
+				if headerVal := req.Header.Get(cfg.ClientIPHeader); headerVal != "" {
+					parts := strings.Split(headerVal, ",")
+					realAddr = strings.TrimSpace(parts[0])
+				}
+			}
+			setForwardedHeaders(req, realAddr, originalHost, originalTLS != nil)
 		}
 	}
-	// 使用全局共享的 Transport，启用连接复用
-	proxy.Transport = sharedTransport
+	// Transport 配置：默认使用全局共享 Transport，如有超时覆盖则克隆一个
+	if cfg.ResponseTimeout > 0 {
+		customTransport := sharedTransport.Clone()
+		customTransport.ResponseHeaderTimeout = time.Duration(cfg.ResponseTimeout) * time.Second
+		proxy.Transport = customTransport
+	} else {
+		proxy.Transport = sharedTransport
+	}
+	// 流式响应刷新间隔
+	if cfg.FlushInterval == -1 {
+		proxy.FlushInterval = -1
+	} else if cfg.FlushInterval > 0 {
+		proxy.FlushInterval = time.Duration(cfg.FlushInterval) * time.Millisecond
+	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		// 设置缓存头（header_down 可覆盖）
+		setCacheControlHeader(resp.Header, cfg.CacheMaxAge)
 		// 隐藏发送给客户端的响应头
 		for _, header := range cfg.HideHeaderDown {
 			resp.Header.Del(header)
@@ -584,6 +734,25 @@ func (s *Server) createReverseProxyHandler(service models.ServiceConfig, proxies
 	proxies[service.ID] = proxy
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 总请求超时（含转发+响应完成的完整周期）
+		if cfg.Timeout > 0 {
+			ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Timeout)*time.Second)
+			defer cancel()
+			r = r.WithContext(ctx)
+		}
+		// 缓冲请求体（完整读取后再转发，允许后续重试；同时修正 Content-Length）
+		if cfg.BufferRequests && r.Body != nil && r.Body != http.NoBody {
+			body, readErr := io.ReadAll(r.Body)
+			r.Body.Close()
+			if readErr == nil {
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				r.ContentLength = int64(len(body))
+			}
+		}
+		// 限制最大请求体大小
+		if cfg.MaxBodySize > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxBodySize*1024*1024)
+		}
 		// 检查是否是 WebSocket 升级请求
 		if isWebSocketUpgrade(r) {
 			handleWebSocketProxy(w, r, targetURL)
@@ -790,6 +959,29 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 	<-errChan
 }
 
+// mergeExtendJSON 将 ExtendJSON 中的字段合并到 configData 中（ExtendJSON 优先级高）
+func mergeExtendJSON(configData []byte, extendJSON string) []byte {
+	if strings.TrimSpace(extendJSON) == "" {
+		return configData
+	}
+	var base map[string]interface{}
+	if err := json.Unmarshal(configData, &base); err != nil {
+		return configData
+	}
+	var ext map[string]interface{}
+	if err := json.Unmarshal([]byte(extendJSON), &ext); err != nil {
+		return configData
+	}
+	for k, v := range ext {
+		base[k] = v
+	}
+	merged, err := json.Marshal(base)
+	if err != nil {
+		return configData
+	}
+	return merged
+}
+
 func normalizeReverseProxyUpstream(raw string) (*url.URL, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -819,6 +1011,7 @@ func (s *Server) createStaticHandler(service models.ServiceConfig) (http.Handler
 	}
 
 	var cfg models.StaticConfig
+	configData = mergeExtendJSON(configData, service.ExtendJSON)
 	if err := json.Unmarshal(configData, &cfg); err != nil {
 		return nil, err
 	}
@@ -829,11 +1022,38 @@ func (s *Server) createStaticHandler(service models.ServiceConfig) (http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		relativePath := strings.TrimPrefix(r.URL.Path, "/")
 		fullPath := filepath.Join(cfg.Root, filepath.FromSlash(relativePath))
+
+		// 隐藏以.开头的文件/目录
+		if cfg.HideDotfiles {
+			for _, part := range strings.Split(relativePath, "/") {
+				if strings.HasPrefix(part, ".") {
+					http.NotFound(w, r)
+					return
+				}
+			}
+		}
+
 		info, err := os.Stat(fullPath)
 		if err != nil {
+			// SPA 模式：请求路径不存在时回退到 index 文件
+			if cfg.SPA && os.IsNotExist(err) {
+				indexName := strings.TrimSpace(cfg.Index)
+				if indexName == "" {
+					indexName = "index.html"
+				}
+				indexPath := filepath.Join(cfg.Root, filepath.FromSlash(indexName))
+				if indexInfo, indexErr := os.Stat(indexPath); indexErr == nil && !indexInfo.IsDir() {
+					applyStaticResponseHeaders(w, cfg)
+					serveStaticFile(w, r, indexPath)
+					return
+				}
+			}
 			http.NotFound(w, r)
 			return
 		}
+
+		// 设置自定义响应头和缓存头
+		applyStaticResponseHeaders(w, cfg)
 
 		if info.IsDir() {
 			if cfg.Browse {
@@ -859,6 +1079,27 @@ func (s *Server) createStaticHandler(service models.ServiceConfig) (http.Handler
 
 		serveStaticFile(w, r, fullPath)
 	}), nil
+}
+
+// setCacheControlHeader 设置 Cache-Control 响应头
+func setCacheControlHeader(header http.Header, cacheMaxAge int) {
+	if cacheMaxAge > 0 {
+		header.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", cacheMaxAge))
+	} else if cacheMaxAge < 0 {
+		header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	}
+}
+
+// applyStaticResponseHeaders 设置静态文件响应头（缓存、自定义头）
+func applyStaticResponseHeaders(w http.ResponseWriter, cfg models.StaticConfig) {
+	setCacheControlHeader(w.Header(), cfg.CacheMaxAge)
+	for key, value := range cfg.HeaderDown {
+		if value == "" {
+			w.Header().Del(key)
+		} else {
+			w.Header().Set(key, value)
+		}
+	}
 }
 
 type directoryEntryView struct {
@@ -1058,6 +1299,7 @@ func (s *Server) createRedirectHandler(service models.ServiceConfig) (http.Handl
 	}
 
 	var cfg models.RedirectConfig
+	configData = mergeExtendJSON(configData, service.ExtendJSON)
 	if err := json.Unmarshal(configData, &cfg); err != nil {
 		return nil, err
 	}
@@ -1066,8 +1308,12 @@ func (s *Server) createRedirectHandler(service models.ServiceConfig) (http.Handl
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 默认使用302临时重定向
-		code := http.StatusFound
+		// 状态码：优先使用配置値，默认 302 临时重定向
+		code := cfg.Code
+		if code == 0 {
+			code = http.StatusFound
+		}
+		setCacheControlHeader(w.Header(), cfg.CacheMaxAge)
 		http.Redirect(w, r, cfg.To, code)
 	}), nil
 }
@@ -1080,6 +1326,7 @@ func (s *Server) createURLJumpHandler(service models.ServiceConfig) (http.Handle
 	}
 
 	var cfg models.URLJumpConfig
+	configData = mergeExtendJSON(configData, service.ExtendJSON)
 	if err := json.Unmarshal(configData, &cfg); err != nil {
 		return nil, err
 	}
@@ -1094,7 +1341,12 @@ func (s *Server) createURLJumpHandler(service models.ServiceConfig) (http.Handle
 			u.Path = r.URL.Path
 			target = u.String()
 		}
-		http.Redirect(w, r, target, http.StatusFound)
+		code := cfg.Code
+		if code == 0 {
+			code = http.StatusFound
+		}
+		setCacheControlHeader(w.Header(), cfg.CacheMaxAge)
+		http.Redirect(w, r, target, code)
 	}), nil
 }
 
@@ -1106,6 +1358,7 @@ func (s *Server) createTextOutputHandler(service models.ServiceConfig) (http.Han
 	}
 
 	var cfg models.TextOutputConfig
+	configData = mergeExtendJSON(configData, service.ExtendJSON)
 	if err := json.Unmarshal(configData, &cfg); err != nil {
 		return nil, err
 	}
@@ -1115,8 +1368,17 @@ func (s *Server) createTextOutputHandler(service models.ServiceConfig) (http.Han
 		if contentType == "" {
 			contentType = "text/plain; charset=utf-8"
 		}
+		// 缓存头（header_down 可覆盖）
+		setCacheControlHeader(w.Header(), cfg.CacheMaxAge)
+		// 自定义响应头（在 WriteHeader 前设置）
+		for key, value := range cfg.HeaderDown {
+			if value == "" {
+				w.Header().Del(key)
+			} else {
+				w.Header().Set(key, value)
+			}
+		}
 		w.Header().Set("Content-Type", contentType)
-
 		statusCode := cfg.StatusCode
 		if statusCode == 0 {
 			statusCode = http.StatusOK

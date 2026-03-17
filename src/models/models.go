@@ -100,7 +100,10 @@ type ServiceConfig struct {
 	SortOrder     int         `json:"sort_order,omitempty"`     // 同端口下的显示/匹配顺序
 	CertificateID string      `json:"certificate_id,omitempty"` // 显式绑定证书
 	Enabled       bool        `json:"enabled"`
-	Config        interface{} `json:"config"`       // 具体配置
+	Config        interface{} `json:"config"`                   // 具体配置
+	ExtendJSON    string      `json:"extend_json,omitempty"`    // 高级配置JSON（独立存储，运行时与Config合并）
+	HTTP2         bool        `json:"http2"`                    // 启用 HTTP/2（脚本运行时聊合到监听器）
+	HTTP3         bool        `json:"http3"`                    // 启用 HTTP/3 / QUIC（运行时聊合，HTTP/2 也会同时生效）
 	RequireAuth   bool        `json:"require_auth"` // 是否需要认证
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
@@ -117,16 +120,28 @@ type ReverseProxyConfig struct {
 	HealthCheck bool   `json:"health_check"` // 健康检查
 
 	// 高级配置
-	PreserveHost    bool              `json:"preserve_host"`     // 保留原始Host头发送给上游
-	HostHeader      string            `json:"host_header"`       // 自定义发送给上游的Host头
-	StripPathPrefix string            `json:"strip_path_prefix"` // 去除请求路径前缀
-	AddPathPrefix   string            `json:"add_path_prefix"`   // 添加请求路径前缀
-	HeaderUp        map[string]string `json:"header_up"`         // 添加/修改发送给上游的请求头
-	HeaderDown      map[string]string `json:"header_down"`       // 添加/修改发送给客户端的响应头
-	HideHeaderUp    []string          `json:"hide_header_up"`    // 隐藏发送给上游的请求头
-	HideHeaderDown  []string          `json:"hide_header_down"`  // 隐藏发送给客户端的响应头
-	BufferRequests  bool              `json:"buffer_requests"`   // 缓冲请求体（用于重试）
-	TrustProxyHeaders bool            `json:"trust_proxy_headers"` // 信任上游代理头（X-Forwarded-*）
+	PreserveHost      bool              `json:"preserve_host"`      // 保留原始Host头发送给上游
+	HostHeader        string            `json:"host_header"`        // 自定义发送给上游的Host头
+	StripPathPrefix   string            `json:"strip_path_prefix"`  // 去除请求路径前缀
+	AddPathPrefix     string            `json:"add_path_prefix"`    // 添加请求路径前缀
+	HeaderUp          map[string]string `json:"header_up"`          // 添加/修改发送给上游的请求头
+	HeaderDown        map[string]string `json:"header_down"`        // 添加/修改发送给客户端的响应头
+	HideHeaderUp      []string          `json:"hide_header_up"`     // 隐藏发送给上游的请求头
+	HideHeaderDown    []string          `json:"hide_header_down"`   // 隐藏发送给客户端的响应头
+	BufferRequests    bool              `json:"buffer_requests"`    // 缓冲请求体（用于重试）
+	TrustProxyHeaders bool              `json:"trust_proxy_headers"` // 信任上游代理头（X-Forwarded-*）
+
+	// 真实IP控制
+	HideRealIP     bool   `json:"hide_real_ip"`     // 不向后端发送真实IP头（X-Real-IP/X-Forwarded-*），默认false（发送）
+	ClientIPHeader string `json:"client_ip_header"` // 面板处于上游代理后时，从哪个请求头读取真实客户端IP（如CF-Connecting-IP）
+
+	// 性能与限流
+	MaxBodySize     int64 `json:"max_body_size"`     // 最大请求体限制（MB，0=不限制）
+	FlushInterval   int   `json:"flush_interval"`   // 流式响应刷新间隔（ms，-1=立即刷新适用于SSE，0=默认）
+	ResponseTimeout int   `json:"response_timeout"` // 等待后端响应头超时（秒，0=使用全局默认60s）
+
+	// 缓存控制
+	CacheMaxAge int `json:"cache_max_age"` // Cache-Control max-age（秒，-1=no-cache，0=不设置，>0=public max-age=N）
 }
 
 // StaticConfig 静态文件配置
@@ -136,6 +151,12 @@ type StaticConfig struct {
 	Browse    bool   `json:"browse"`     // 是否允许目录浏览
 	OAuth     bool   `json:"oauth"`      // 是否开启OAuth认证
 	AccessLog bool   `json:"access_log"` // 记录访问日志
+
+	// 高级配置
+	HideDotfiles bool              `json:"hide_dotfiles"` // 隐藏以.开头的文件和目录
+	SPA          bool              `json:"spa"`           // SPA单页应用模式（404自动回退到index文件）
+	CacheMaxAge  int               `json:"cache_max_age"` // Cache-Control max-age（秒，-1=no-cache，0=不设置）
+	HeaderDown   map[string]string `json:"header_down"`   // 自定义响应头
 }
 
 // RedirectConfig 重定向配置
@@ -143,6 +164,10 @@ type RedirectConfig struct {
 	To        string `json:"to"`         // 重定向目标
 	OAuth     bool   `json:"oauth"`      // 是否开启OAuth认证
 	AccessLog bool   `json:"access_log"` // 记录访问日志
+
+	// 高级配置
+	Code       int `json:"code"`        // 重定向状态码（301=永久/302=临时/307=临时保持方法/308=永久保持方法，默认302）
+	CacheMaxAge int `json:"cache_max_age"` // Cache-Control max-age（秒，-1=no-cache，0=不设置，>0=public max-age=N）
 }
 
 // URLJumpConfig URL跳转配置
@@ -151,6 +176,10 @@ type URLJumpConfig struct {
 	OAuth        bool   `json:"oauth"`         // 是否开启OAuth认证
 	AccessLog    bool   `json:"access_log"`    // 记录访问日志
 	PreservePath bool   `json:"preserve_path"` // 是否保留路径
+
+	// 高级配置
+	Code        int `json:"code"`         // 跳转状态码（301/302/307/308，默认302）
+	CacheMaxAge int `json:"cache_max_age"` // Cache-Control max-age（秒，-1=no-cache，0=不设置，>0=public max-age=N）
 }
 
 // TextOutputConfig 文本输出配置
@@ -160,6 +189,10 @@ type TextOutputConfig struct {
 	StatusCode  int    `json:"status_code"`  // HTTP状态码
 	OAuth       bool   `json:"oauth"`        // 是否开启OAuth认证
 	AccessLog   bool   `json:"access_log"`   // 记录访问日志
+
+	// 高级配置
+	HeaderDown  map[string]string `json:"header_down"`  // 自定义响应头
+	CacheMaxAge int               `json:"cache_max_age"` // Cache-Control max-age（秒，-1=no-cache，0=不设置，>0=public max-age=N）
 }
 
 // CertificateSource 证书来源

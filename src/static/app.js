@@ -461,8 +461,10 @@ function createDefaultServiceDraft(service = null) {
     const config = service?.config || {};
     return {
         type,
+        http2: service?.http2 || false,
+        http3: service?.http3 || false,
         config: createServiceConfigDefaults(type, config),
-        advancedText: getAdvancedConfigText(type, config)
+        advancedText: service?.extend_json || getAdvancedConfigText(type, config)
     };
 }
 
@@ -478,8 +480,10 @@ function createServiceDraft(service = null) {
         sort_order: Number(service?.sort_order || 0),
         certificate_id: '',
         enabled: service?.enabled !== false,
+        http2: service?.http2 || false,
+        http3: service?.http3 || false,
         config: createServiceConfigDefaults(type, config),
-        advancedText: getAdvancedConfigText(type, config)
+        advancedText: service?.extend_json || getAdvancedConfigText(type, config)
     };
 }
 
@@ -1486,10 +1490,26 @@ function renderDefaultServiceConfig() {
 
     const cfg = defaultServiceDraft.config || createServiceConfigDefaults(type);
     const isAdvanced = currentDefaultServiceMode === 'advanced';
+    const isListenerHTTPS = (document.getElementById('listenerProtocol')?.value || 'http') === 'https';
+    const dhv_raw = defaultServiceDraft.http3 ? 'http3' : (defaultServiceDraft.http2 ? 'http2' : 'http1');
+    const dhv = (!isListenerHTTPS && dhv_raw === 'http3') ? 'http2' : dhv_raw;
     let configHtml = `
-        <div class="mode-switch" style="margin-bottom: 16px;">
-            <button type="button" class="btn ${!isAdvanced ? 'btn-primary' : ''}" onclick="toggleDefaultServiceMode('simple')">简易模式</button>
-            <button type="button" class="btn ${isAdvanced ? 'btn-primary' : ''}" onclick="toggleDefaultServiceMode('advanced')">定制模式</button>
+        <div class="switch-row" style="margin-bottom: 16px;">
+            <div>
+                <div style="font-size: 12px; color: #64748b; font-weight: 500; margin-bottom: 6px;">HTTP 版本</div>
+                <div class="mode-switch" id="defaultHttpVersionSwitch">
+                    <button type="button" class="btn ${dhv === 'http1' ? 'btn-primary' : ''}" onclick="setDefaultServiceHTTPVersion('http1')">HTTP/1.1</button>
+                    <button type="button" class="btn ${dhv === 'http2' ? 'btn-primary' : ''}" onclick="setDefaultServiceHTTPVersion('http2')">HTTP/2</button>
+                    ${isListenerHTTPS ? `<button type="button" class="btn ${dhv === 'http3' ? 'btn-primary' : ''}" onclick="setDefaultServiceHTTPVersion('http3')">HTTP/3</button>` : ''}
+                </div>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 12px; color: #64748b; font-weight: 500; margin-bottom: 6px;">配置模式</div>
+                <div class="mode-switch">
+                    <button type="button" class="btn ${!isAdvanced ? 'btn-primary' : ''}" onclick="toggleDefaultServiceMode('simple')">简易</button>
+                    <button type="button" class="btn ${isAdvanced ? 'btn-primary' : ''}" onclick="toggleDefaultServiceMode('advanced')">定制</button>
+                </div>
+            </div>
         </div>
     `;
 
@@ -1632,6 +1652,8 @@ function handleDefaultServiceTypeChange() {
     const nextType = document.getElementById('defaultServiceType').value;
     defaultServiceDraft = {
         type: nextType,
+        http2: defaultServiceDraft?.http2 || false,
+        http3: defaultServiceDraft?.http3 || false,
         config: createServiceConfigDefaults(nextType, defaultServiceDraft?.config || {}),
         advancedText: ''
     };
@@ -1655,6 +1677,7 @@ async function showListenerModal(listener = null) {
                 if (defaultService) {
                     currentDefaultServiceId = defaultService.id;
                     defaultServiceDraft = createDefaultServiceDraft(defaultService);
+                    currentDefaultServiceMode = defaultServiceDraft.advancedText ? 'advanced' : 'simple';
                 }
             }
         } catch (e) {
@@ -1671,7 +1694,7 @@ async function showListenerModal(listener = null) {
             </div>
             <div class="form-group">
                 ${labelWithHint('协议', 'HTTP 或 HTTPS，HTTPS 会参与证书匹配')}
-                <select id="listenerProtocol" class="form-control">
+                <select id="listenerProtocol" class="form-control" onchange="renderDefaultServiceConfig()">
                     <option value="http" ${listener?.protocol === 'http' ? 'selected' : ''}>HTTP</option>
                     <option value="https" ${listener?.protocol === 'https' ? 'selected' : ''}>HTTPS</option>
                 </select>
@@ -1709,6 +1732,20 @@ function toggleDefaultServiceMode(mode) {
     renderDefaultServiceConfig();
 }
 
+// 切换默认服务 HTTP 版本
+function setDefaultServiceHTTPVersion(version) {
+    if (!defaultServiceDraft) return;
+    defaultServiceDraft.http2 = (version === 'http2' || version === 'http3');
+    defaultServiceDraft.http3 = (version === 'http3');
+    const sw = document.getElementById('defaultHttpVersionSwitch');
+    if (!sw) return;
+    const btns = sw.querySelectorAll('.btn');
+    const versions = ['http1', 'http2', 'http3'];
+    versions.forEach((v, i) => {
+        if (btns[i]) btns[i].className = `btn ${v === version ? 'btn-primary' : ''}`;
+    });
+}
+
 // 保存网站管理
 async function saveListener(id = null) {
     captureDefaultServiceForm();
@@ -1719,14 +1756,7 @@ async function saveListener(id = null) {
 
     let defaultService = null;
     if (defaultServiceDraft?.type) {
-        defaultService = {
-            name: '默认规则',
-            type: defaultServiceDraft.type,
-            domain: '*',
-            enabled: true,
-            config: { ...defaultServiceDraft.config }
-        };
-
+        let extendJson = '';
         if (defaultServiceDraft.advancedText) {
             const textarea = document.getElementById('defaultAdvanced');
             if (textarea && !validateJsonField(textarea)) {
@@ -1740,12 +1770,22 @@ async function saveListener(id = null) {
                     showToast('默认响应高级配置必须是 JSON 对象格式', 'error');
                     return;
                 }
-                defaultService.config = { ...defaultService.config, ...advanced };
+                extendJson = defaultServiceDraft.advancedText;
             } catch (e) {
                 showToast('默认响应高级配置 JSON 格式错误：' + e.message, 'error');
                 return;
             }
         }
+        defaultService = {
+            name: '默认规则',
+            type: defaultServiceDraft.type,
+            domain: '*',
+            enabled: true,
+            http2: defaultServiceDraft.http2 || false,
+            http3: defaultServiceDraft.http3 || false,
+            config: { ...defaultServiceDraft.config },
+            extend_json: extendJson
+        };
     }
 
     const body = { port, protocol, enabled, default_service: !id ? defaultService : null };
@@ -3489,35 +3529,47 @@ function isHTTPSListenerContext() {
 async function showServiceModal(service = null) {
     const isEdit = !!service;
     setModalVariant('service');
-    currentServiceMode = 'simple';
     currentServiceDraft = createServiceDraft(service);
+    currentServiceMode = currentServiceDraft.advancedText ? 'advanced' : 'simple';
     document.getElementById('modalTitle').textContent = isEdit ? '编辑服务' : '添加服务';
     document.getElementById('modalBody').innerHTML = `
         <form id="serviceForm" class="modal-form-grid">
-            <div class="form-group">
-                ${labelWithHint('配置模式', '简易模式适合常用配置，定制模式适合填写更多参数')}
-                <div class="mode-switch">
-                    <button type="button" class="btn btn-primary" id="serviceModeSimple" onclick="toggleServiceMode('simple')">简易模式</button>
-                    <button type="button" class="btn" id="serviceModeAdvanced" onclick="toggleServiceMode('advanced')">定制模式</button>
+            <div class="modal-form-grid two-column modal-span-2" style="gap: 8px 12px;">
+                <div class="form-group" style="margin-bottom: 0">
+                    ${labelWithHint('\u670d\u52a1\u540d\u79f0', '\u7528\u4e8e\u540e\u53f0\u5c55\u793a\u548c\u65e5\u5fd7\u8bc6\u522b')}
+                    <input type="text" id="serviceName" class="form-control" value="${currentServiceDraft.name}" placeholder="\u8f93\u5165\u670d\u52a1\u540d\u79f0">
+                </div>
+                <div class="form-group" style="margin-bottom: 0">
+                    ${labelWithHint('\u670d\u52a1\u7c7b\u578b', '\u51b3\u5b9a\u5f53\u524d\u57df\u540d\u89c4\u5219\u7684\u5904\u7406\u65b9\u5f0f')}
+                    <select id="serviceType" class="form-control" onchange="handleServiceTypeChange()">
+                        <option value="reverse_proxy" ${currentServiceDraft.type === 'reverse_proxy' ? 'selected' : ''}>反向代理</option>
+                        <option value="static" ${currentServiceDraft.type === 'static' ? 'selected' : ''}>静态文件服务</option>
+                        <option value="redirect" ${currentServiceDraft.type === 'redirect' ? 'selected' : ''}>重定向</option>
+                        <option value="url_jump" ${currentServiceDraft.type === 'url_jump' ? 'selected' : ''}>URL跳转</option>
+                        <option value="text_output" ${currentServiceDraft.type === 'text_output' ? 'selected' : ''}>文本输出</option>
+                    </select>
                 </div>
             </div>
-            <div class="form-group">
-                ${labelWithHint('服务名称', '用于后台展示和日志识别')}
-                <input type="text" id="serviceName" class="form-control" value="${currentServiceDraft.name}" placeholder="输入服务名称">
-            </div>
-            <div class="form-group">
-                ${labelWithHint('服务类型', '决定当前域名规则的处理方式')}
-                <select id="serviceType" class="form-control" onchange="handleServiceTypeChange()">
-                    <option value="reverse_proxy" ${currentServiceDraft.type === 'reverse_proxy' ? 'selected' : ''}>反向代理</option>
-                    <option value="static" ${currentServiceDraft.type === 'static' ? 'selected' : ''}>静态文件服务</option>
-                    <option value="redirect" ${currentServiceDraft.type === 'redirect' ? 'selected' : ''}>重定向</option>
-                    <option value="url_jump" ${currentServiceDraft.type === 'url_jump' ? 'selected' : ''}>URL跳转</option>
-                    <option value="text_output" ${currentServiceDraft.type === 'text_output' ? 'selected' : ''}>文本输出</option>
-                </select>
+            <div class="modal-span-2 switch-row" style="margin: 10px 0 2px;">
+                <div>
+                    <div style="font-size: 12px; color: #64748b; font-weight: 500; margin-bottom: 6px;">HTTP \u7248\u672c</div>
+                    <div class="mode-switch">
+                        <button type="button" class="btn" id="svcHttpV1" onclick="setServiceHTTPVersion('http1')">HTTP/1.1</button>
+                        <button type="button" class="btn" id="svcHttpV2" onclick="setServiceHTTPVersion('http2')">HTTP/2</button>
+                        ${isHTTPSListenerContext() ? '<button type="button" class="btn" id="svcHttpV3" onclick="setServiceHTTPVersion(\'http3\')">HTTP/3</button>' : ''}
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 12px; color: #64748b; font-weight: 500; margin-bottom: 6px;">\u914d\u7f6e\u6a21\u5f0f</div>
+                    <div class="mode-switch">
+                        <button type="button" class="btn" id="serviceModeSimple" onclick="toggleServiceMode('simple')">\u7b80\u6613</button>
+                        <button type="button" class="btn" id="serviceModeAdvanced" onclick="toggleServiceMode('advanced')">\u5b9a\u5236</button>
+                    </div>
+                </div>
             </div>
             <div id="serviceConfigFields" class="modal-span-2"></div>
             <div class="form-group modal-span-2">
-                ${checkboxLabelWithHint('启用', '关闭后该域名规则不参与匹配', 'serviceEnabled', currentServiceDraft.enabled)}
+                ${checkboxLabelWithHint('\u542f\u7528', '\u5173\u95ed\u540e\u8be5\u57df\u540d\u89c4\u5219\u4e0d\u53c2\u4e0e\u5339\u914d', 'serviceEnabled', currentServiceDraft.enabled)}
             </div>
         </form>
     `;
@@ -3531,6 +3583,20 @@ function toggleServiceMode(mode) {
     captureServiceForm();
     currentServiceMode = mode;
     renderServiceConfigForm();
+}
+
+// 切换服务 HTTP 版本
+function setServiceHTTPVersion(version) {
+    if (!currentServiceDraft) return;
+    currentServiceDraft.http2 = (version === 'http2' || version === 'http3');
+    currentServiceDraft.http3 = (version === 'http3');
+    const hv = currentServiceDraft.http3 ? 'http3' : (currentServiceDraft.http2 ? 'http2' : 'http1');
+    const v1 = document.getElementById('svcHttpV1');
+    const v2 = document.getElementById('svcHttpV2');
+    const v3 = document.getElementById('svcHttpV3');
+    if (v1) v1.className = `btn ${hv === 'http1' ? 'btn-primary' : ''}`;
+    if (v2) v2.className = `btn ${hv === 'http2' ? 'btn-primary' : ''}`;
+    if (v3) v3.className = `btn ${hv === 'http3' ? 'btn-primary' : ''}`;
 }
 
 function handleServiceTypeChange() {
@@ -3594,8 +3660,19 @@ function renderServiceConfigForm() {
     const container = document.getElementById('serviceConfigFields');
     if (!container || !currentServiceDraft) return;
 
+    // 同步配置模式按钮
     document.getElementById('serviceModeSimple').className = `btn ${currentServiceMode === 'simple' ? 'btn-primary' : ''}`;
     document.getElementById('serviceModeAdvanced').className = `btn ${currentServiceMode === 'advanced' ? 'btn-primary' : ''}`;
+
+    // 同步 HTTP 版本按钮
+    const hv_raw = currentServiceDraft.http3 ? 'http3' : (currentServiceDraft.http2 ? 'http2' : 'http1');
+    const hv = (!isHTTPSListenerContext() && hv_raw === 'http3') ? 'http2' : hv_raw;
+    const v1 = document.getElementById('svcHttpV1');
+    const v2 = document.getElementById('svcHttpV2');
+    const v3 = document.getElementById('svcHttpV3');
+    if (v1) v1.className = `btn ${hv === 'http1' ? 'btn-primary' : ''}`;
+    if (v2) v2.className = `btn ${hv === 'http2' ? 'btn-primary' : ''}`;
+    if (v3) v3.className = `btn ${hv === 'http3' ? 'btn-primary' : ''}`;
 
     const cfg = currentServiceDraft.config || createServiceConfigDefaults(currentServiceDraft.type);
     const type = currentServiceDraft.type;
@@ -3704,7 +3781,8 @@ function renderServiceConfigForm() {
 async function saveService(id = null) {
     captureServiceForm();
 
-    let config = { ...currentServiceDraft.config };
+    const config = { ...currentServiceDraft.config };
+    let extendJson = '';
     if (currentServiceDraft.advancedText) {
         const textarea = document.getElementById('configAdvanced');
         if (textarea && !validateJsonField(textarea)) {
@@ -3718,7 +3796,7 @@ async function saveService(id = null) {
                 showToast('高级配置必须是 JSON 对象格式', 'error');
                 return;
             }
-            config = { ...config, ...advanced };
+            extendJson = currentServiceDraft.advancedText;
         } catch (e) {
             showToast('高级配置 JSON 格式错误：' + e.message, 'error');
             return;
@@ -3733,7 +3811,10 @@ async function saveService(id = null) {
         sort_order: currentServiceDraft.sort_order,
         certificate_id: currentServiceDraft.certificate_id,
         enabled: currentServiceDraft.enabled,
-        config
+        http2: currentServiceDraft.http2 || false,
+        http3: currentServiceDraft.http3 || false,
+        config,
+        extend_json: extendJson
     };
 
     const url = id ? `/services/${id}` : '/services';
@@ -3915,6 +3996,21 @@ function getAdvancedConfigDocs(type) {
     if (type === 'reverse_proxy') {
         return `
 <div class="docs-section">
+    <h4>🌐 真实IP控制</h4>
+    <div class="docs-item">
+        <code>"hide_real_ip": true</code>
+        <p>不向后端发送任何真实IP头（X-Real-IP、X-Forwarded-For 等），后端将看不到客户端IP信息</p>
+    </div>
+    <div class="docs-item">
+        <code>"client_ip_header": "CF-Connecting-IP"</code>
+        <p>面板自身处于代理后时，从哪个请求头读取真实客户端IP并转发给后端。常见值：CF-Connecting-IP（CloudFlare）、X-Real-IP、X-Forwarded-For</p>
+    </div>
+    <div class="docs-item">
+        <code>"trust_proxy_headers": true</code>
+        <p>信任来自客户端的 X-Forwarded-* 头，不覆盖已有的转发信息（适用于多层代理场景）</p>
+    </div>
+</div>
+<div class="docs-section">
     <h4>🔧 Host 头配置</h4>
     <div class="docs-item">
         <code>"preserve_host": true</code>
@@ -3959,30 +4055,50 @@ function getAdvancedConfigDocs(type) {
     </div>
 </div>
 <div class="docs-section">
-    <h4>⚙️ 其他配置</h4>
+    <h4>⚡ 性能与限流</h4>
     <div class="docs-item">
-        <code>"trust_proxy_headers": true</code>
-        <p>信任上游代理头（X-Forwarded-*），不覆盖已有的转发信息</p>
+        <code>"max_body_size": 100</code>
+        <p>最大请求体大小（MB），超出则返回 413 错误，0 表示不限制</p>
     </div>
     <div class="docs-item">
-        <code>"timeout": 60</code>
-        <p>请求超时时间（秒），默认 30 秒</p>
+        <code>"flush_interval": -1</code>
+        <p>流式响应刷新间隔（ms）。设置 -1 可立即刷新，适用于 SSE/流式传输；0 = 使用默认策略</p>
+    </div>
+    <div class="docs-item">
+        <code>"response_timeout": 120</code>
+        <p>等待后端响应头的超时（秒），覆盖全局默认値（60s）。0 = 使用全局默认</p>
+    </div>
+    <div class="docs-item">
+        <code>"buffer_requests": true</code>
+        <p>缓冲完整请求体后再转发（占用更多内存，但可支持重试）</p>
+    </div>
+</div>
+<div class="docs-section">
+    <h4>📦 缓存控制</h4>
+    <div class="docs-item">
+        <code>"cache_max_age": 3600</code>
+        <p>覆盖后端响应的缓存头，设置 Cache-Control: public, max-age=N（秒）。-1 = no-cache，0 = 不设置（保留后端原始头）</p>
     </div>
 </div>
 <div class="docs-section docs-example">
     <h4>📋 完整示例</h4>
     <pre>{
+  "hide_real_ip": false,
+  "client_ip_header": "CF-Connecting-IP",
   "preserve_host": true,
   "strip_path_prefix": "/api",
   "header_up": {
-    "X-Real-Host": "{host}",
-    "X-Request-ID": "req-12345"
+    "X-Custom-Header": "value"
   },
   "header_down": {
     "X-Frame-Options": "SAMEORIGIN",
     "Strict-Transport-Security": "max-age=31536000"
   },
-  "hide_header_down": ["Server", "X-Powered-By"]
+  "hide_header_down": ["Server", "X-Powered-By"],
+  "max_body_size": 50,
+  "flush_interval": -1,
+  "response_timeout": 120,
+  "cache_max_age": 0
 }</pre>
 </div>`;
     }
@@ -3990,7 +4106,7 @@ function getAdvancedConfigDocs(type) {
     if (type === 'static') {
         return `
 <div class="docs-section">
-    <h4>📁 静态文件服务配置</h4>
+    <h4>📁 基础配置</h4>
     <div class="docs-item">
         <code>"root": "/var/www/html"</code>
         <p>静态文件根目录路径</p>
@@ -4003,21 +4119,104 @@ function getAdvancedConfigDocs(type) {
         <code>"browse": true</code>
         <p>启用目录浏览功能</p>
     </div>
+</div>
+<div class="docs-section">
+    <h4>🔒 安全与访问控制</h4>
+    <div class="docs-item">
+        <code>"hide_dotfiles": true</code>
+        <p>隐藏所有以 . 开头的文件和目录（如 .env、.git 等），访问将返回 404</p>
+    </div>
+</div>
+<div class="docs-section">
+    <h4>📱 SPA 单页应用</h4>
+    <div class="docs-item">
+        <code>"spa": true</code>
+        <p>开启 SPA 模式：当请求路径不存在时自动回退到 index 文件。适用于 Vue/React/Angular 等单页应用</p>
+    </div>
+</div>
+<div class="docs-section">
+    <h4>⚡ 缓存控制</h4>
+    <div class="docs-item">
+        <code>"cache_max_age": 86400</code>
+        <p>为静态文件设置 Cache-Control: public, max-age=N（秒）。-1 = no-cache（强制验证），0 = 不设置（使用浏览器默认）</p>
+    </div>
+</div>
+<div class="docs-section">
+    <h4>📥 自定义响应头</h4>
+    <div class="docs-item">
+        <code>"header_down": {"X-Content-Type-Options": "nosniff"}</code>
+        <p>为所有响应添加自定义响应头，值为空字符串则删除该头</p>
+    </div>
+</div>
+<div class="docs-section docs-example">
+    <h4>📋 完整示例</h4>
+    <pre>{
+  "hide_dotfiles": true,
+  "spa": true,
+  "cache_max_age": 3600,
+  "header_down": {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY"
+  }
+}</pre>
 </div>`;
     }
     
-    if (type === 'redirect' || type === 'url_jump') {
+    if (type === 'redirect') {
         return `
 <div class="docs-section">
-    <h4>🔀 重定向/跳转配置</h4>
+    <h4>🔀 重定向配置</h4>
     <div class="docs-item">
         <code>"to": "https://example.com{uri}"</code>
-        <p>重定向目标地址，支持 {uri} 变量保留原始路径</p>
+        <p>重定向目标地址，支持 {uri} 变量保留原始路径和查询参数</p>
     </div>
     <div class="docs-item">
-        <code>"preserve_path": true</code>
-        <p>跳转时保留原始请求路径</p>
+        <code>"code": 301</code>
+        <p>重定向状态码：<br>301 = 永久重定向（浏览器/搜索引擎会缓存）<br>302 = 临时重定向（默认）<br>307 = 临时重定向（严格保持请求方法）<br>308 = 永久重定向（严格保持请求方法）</p>
     </div>
+</div>
+<div class="docs-section">
+    <h4>📦 缓存控制</h4>
+    <div class="docs-item">
+        <code>"cache_max_age": 86400</code>
+        <p>设置重定向响应的 Cache-Control: public, max-age=N（秒）。配合 301 永久重定向使用。-1 = no-cache，0 = 不设置</p>
+    </div>
+</div>
+<div class="docs-section docs-example">
+    <h4>📋 示例</h4>
+    <pre>{
+  "code": 301,
+  "cache_max_age": 86400
+}</pre>
+</div>`;
+    }
+
+    if (type === 'url_jump') {
+        return `
+<div class="docs-section">
+    <h4>🔀 URL跳转配置</h4>
+    <div class="docs-item">
+        <code>"preserve_path": true</code>
+        <p>跳转时将原始请求路径拼接到目标 URL</p>
+    </div>
+    <div class="docs-item">
+        <code>"code": 302</code>
+        <p>跳转状态码：301（永久）、302（临时，默认）、307（临时保持方法）、308（永久保持方法）</p>
+    </div>
+</div>
+<div class="docs-section">
+    <h4>📦 缓存控制</h4>
+    <div class="docs-item">
+        <code>"cache_max_age": 86400</code>
+        <p>设置跳转响应的 Cache-Control: public, max-age=N（秒）。配合 301 永久跳转使用。-1 = no-cache，0 = 不设置</p>
+    </div>
+</div>
+<div class="docs-section docs-example">
+    <h4>📋 示例</h4>
+    <pre>{
+  "code": 301,
+  "cache_max_age": 86400
+}</pre>
 </div>`;
     }
     
@@ -4037,6 +4236,30 @@ function getAdvancedConfigDocs(type) {
         <code>"status_code": 200</code>
         <p>HTTP 响应状态码</p>
     </div>
+</div>
+<div class="docs-section">
+    <h4>📦 缓存控制</h4>
+    <div class="docs-item">
+        <code>"cache_max_age": 3600</code>
+        <p>设置 Cache-Control: public, max-age=N（秒）。适用于输出静态JSON、配置文件等场景。-1 = no-cache，0 = 不设置</p>
+    </div>
+</div>
+<div class="docs-section">
+    <h4>📥 自定义响应头</h4>
+    <div class="docs-item">
+        <code>"header_down": {"Access-Control-Allow-Origin": "*"}</code>
+        <p>为响应添加自定义头，值为空字符串则删除该头。header_down 可覆盖 cache_max_age 设置的缓存头</p>
+    </div>
+</div>
+<div class="docs-section docs-example">
+    <h4>📋 示例（CORS接口）</h4>
+    <pre>{
+  "cache_max_age": 0,
+  "header_down": {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+  }
+}</pre>
 </div>`;
     }
     
@@ -4047,9 +4270,36 @@ function getAdvancedConfigDocs(type) {
 function getAdvancedConfigPlaceholder(type) {
     if (type === 'reverse_proxy') {
         return `{
+  "hide_real_ip": false,
+  "client_ip_header": "CF-Connecting-IP",
   "preserve_host": true,
   "header_up": {"X-Custom": "value"},
-  "header_down": {"X-Frame-Options": "DENY"}
+  "header_down": {"X-Frame-Options": "DENY"},
+  "hide_header_down": ["Server"],
+  "max_body_size": 0,
+  "flush_interval": 0,
+  "response_timeout": 0,
+  "cache_max_age": 0
+}`;
+    }
+    if (type === 'static') {
+        return `{
+  "hide_dotfiles": true,
+  "spa": false,
+  "cache_max_age": 0,
+  "header_down": {"X-Content-Type-Options": "nosniff"}
+}`;
+    }
+    if (type === 'redirect' || type === 'url_jump') {
+        return `{
+  "code": 302,
+  "cache_max_age": 0
+}`;
+    }
+    if (type === 'text_output') {
+        return `{
+  "cache_max_age": 0,
+  "header_down": {"Access-Control-Allow-Origin": "*"}
 }`;
     }
     return '{}';
