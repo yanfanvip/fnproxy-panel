@@ -24,7 +24,7 @@
 9. [结论](#结论)
 
 ## 简介
-本文件系统性阐述 Caddy Panel 中的 JWT 认证机制，覆盖密钥管理、签名算法、有效期设置、令牌验证流程、存储机制（Cookie）、Claims 结构设计、令牌刷新策略与安全最佳实践，并提供客户端处理示例的代码路径指引，帮助开发者与运维人员正确实现与维护该认证体系。
+本文件系统性阐述 FnProxy Panel 中的 JWT 认证机制，覆盖密钥管理、签名算法、有效期设置、令牌验证流程、存储机制（Cookie）、Claims 结构设计、令牌刷新策略与安全最佳实践，并提供客户端处理示例的代码路径指引，帮助开发者与运维人员正确实现与维护该认证体系。
 
 ## 项目结构
 围绕 JWT 认证的关键模块分布如下：
@@ -351,7 +351,7 @@ PAGE["pkg/oauth/page.go"] --> HND
 - [src/handlers/auth.go:167-182](file://src/handlers/auth.go#L167-L182)
 
 ## 结论
-Caddy Panel 的 JWT 认证机制采用 HS256 签名与固定密钥，结合 Cookie 存储（HttpOnly、SameSite、Secure）实现基础的安全保障。登录与 OAuth 登录流程清晰，支持“记住我”延长有效期。建议在生产环境中：
+FnProxy Panel 的 JWT 认证机制采用 HS256 签名与固定密钥，结合 Cookie 存储（HttpOnly、SameSite、Secure）实现基础的安全保障。登录与 OAuth 登录流程清晰，支持“记住我”延长有效期。建议在生产环境中：
 - 替换默认密钥并妥善保管
 - 使用 HTTPS 以启用 Secure Cookie
 - 严格限制 Cookie 的作用域与 SameSite 策略

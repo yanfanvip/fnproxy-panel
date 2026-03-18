@@ -25,7 +25,7 @@
 10. [附录](#附录)
 
 ## 简介
-本文件针对 Caddy Panel 的 Token 鉴权机制进行全面技术文档化，重点覆盖：
+本文件针对 FnProxy Panel 的 Token 鉴权机制进行全面技术文档化，重点覆盖：
 - Bearer Token 认证流程：Authorization 头解析、令牌提取与验证
 - 中间件实现：请求拦截、令牌验证、上下文注入
 - 鉴权策略：签名验证、过期检查、权限验证
@@ -34,7 +34,7 @@
 - 完整中间件集成示例与调试指南
 
 ## 项目结构
-Caddy Panel 采用分层架构，Token 鉴权涉及以下关键模块：
+FnProxy Panel 采用分层架构，Token 鉴权涉及以下关键模块：
 - 中间件层：认证与权限控制（AuthMiddleware、AdminMiddleware、CORSMiddleware、LoggingMiddleware）
 - 工具层：JWT 生成与验证、Cookie 管理、Header Token 解析
 - 处理器层：登录、登出、当前用户信息、OAuth 登录
@@ -339,7 +339,7 @@ HANDLERS_AUTH --> UTILS
 - [src/handlers/auth.go:37-76](file://src/handlers/auth.go#L37-L76)
 
 ## 结论
-Caddy Panel 的 Token 鉴权机制通过“Header Token + JWT”的双通道设计，既满足了用户独立 Token 的便捷访问，又保留了 JWT 的无状态特性。中间件链将认证与权限控制前置，配合 Cookie 管理与上下文注入，形成清晰、可扩展的鉴权体系。建议在生产环境中强化密钥管理、TLS 传输与日志审计，确保安全与可观测性。
+FnProxy Panel 的 Token 鉴权机制通过“Header Token + JWT”的双通道设计，既满足了用户独立 Token 的便捷访问，又保留了 JWT 的无状态特性。中间件链将认证与权限控制前置，配合 Cookie 管理与上下文注入，形成清晰、可扩展的鉴权体系。建议在生产环境中强化密钥管理、TLS 传输与日志审计，确保安全与可观测性。
 
 ## 附录
 

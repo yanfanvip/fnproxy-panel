@@ -30,10 +30,10 @@
 10. [附录](#附录)
 
 ## 简介
-本文件为 Caddy Panel 的完整 API 接口文档，覆盖认证、配置管理、监听器与服务管理、用户管理、证书管理、SSH 管理、监控、日志与安全、防火墙以及 WebSocket 终端等模块。文档提供每个 RESTful 端点的 HTTP 方法、URL 模式、请求参数、响应格式、状态码、请求示例、响应示例与错误处理说明，并包含 API 版本管理与向后兼容性信息。
+本文件为 FnProxy Panel 的完整 API 接口文档，覆盖认证、配置管理、监听器与服务管理、用户管理、证书管理、SSH 管理、监控、日志与安全、防火墙以及 WebSocket 终端等模块。文档提供每个 RESTful 端点的 HTTP 方法、URL 模式、请求参数、响应格式、状态码、请求示例、响应示例与错误处理说明，并包含 API 版本管理与向后兼容性信息。
 
 ## 项目结构
-Caddy Panel 采用 Go 语言开发，采用分层架构：入口程序负责路由注册与中间件装配，处理器模块负责具体业务逻辑，模型定义数据结构，配置与工具模块提供运行时配置与辅助能力。
+FnProxy Panel 采用 Go 语言开发，采用分层架构：入口程序负责路由注册与中间件装配，处理器模块负责具体业务逻辑，模型定义数据结构，配置与工具模块提供运行时配置与辅助能力。
 
 ```mermaid
 graph TB
@@ -67,7 +67,7 @@ A --> G["静态资源与前端<br/>src/static/*"]
 - [src/utils/certificate_manager.go:126-166](file://src/utils/certificate_manager.go#L126-L166)
 
 ## 架构总览
-Caddy Panel 的 HTTP 服务通过主程序注册路由，挂载认证、CORS、日志与防火墙中间件，然后将 API 请求分发至相应处理器。WebSocket 终端通过独立路由接入。
+FnProxy Panel 的 HTTP 服务通过主程序注册路由，挂载认证、CORS、日志与防火墙中间件，然后将 API 请求分发至相应处理器。WebSocket 终端通过独立路由接入。
 
 ```mermaid
 sequenceDiagram
@@ -520,7 +520,7 @@ Handlers --> CertMgr["证书管理<br/>src/utils/certificate_manager.go"]
 - [src/handlers/terminal.go:512-552](file://src/handlers/terminal.go#L512-L552)
 
 ## 结论
-Caddy Panel 提供了完善的 RESTful API 体系，覆盖认证、配置、监听器与服务、用户、证书、SSH、监控、日志、安全与防火墙等核心功能。API 设计遵循统一响应格式与中间件链，具备良好的扩展性与安全性。建议在生产环境中显式设置安全参数与运行目录，并定期维护证书与日志。
+FnProxy Panel 提供了完善的 RESTful API 体系，覆盖认证、配置、监听器与服务、用户、证书、SSH、监控、日志、安全与防火墙等核心功能。API 设计遵循统一响应格式与中间件链，具备良好的扩展性与安全性。建议在生产环境中显式设置安全参数与运行目录，并定期维护证书与日志。
 
 ## 附录
 
