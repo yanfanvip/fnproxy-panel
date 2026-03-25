@@ -1035,13 +1035,19 @@ func (m *CertificateManager) configureChallengeProvider(client *lego.Client, cer
 			return err
 		}
 		fmt.Printf("[证书申请 %s] DNS provider创建成功: %s\n", cert.ID, cert.DNSProvider)
-		// 配置DNS-01挑战：禁用预检查，避免在Present之前进行DNS查询超时
-		// 设置传播等待时间为60秒，跳过DNS传播检查（由provider自己处理）
+		// 配置DNS-01挑战：
+		// 1. 禁用权威NS传播检查（国内 NS 查询往往超时）
+		// 2. 使用国内公共DNS做传播检查，确认TXT记录已可见后再通知ACME
+		// 3. 轮询超时120秒，间隔10秒检查一次
 		dns01.ClearFqdnCache()
-		return client.Challenge.SetDNS01Provider(provider, 
+		return client.Challenge.SetDNS01Provider(provider,
 			dns01.AddDNSTimeout(30*time.Second),
 			dns01.DisableAuthoritativeNssPropagationRequirement(),
-			dns01.PropagationWait(60*time.Second, true),
+			dns01.AddRecursiveNameservers([]string{
+				"119.29.29.29:53", // 腾讯公共DNS
+				"223.5.5.5:53",   // 阿里公共DNS
+			}),
+			dns01.PropagationWait(120*time.Second, false),
 		)
 	default:
 		return errors.New("不支持的证书校验方式")
@@ -1150,16 +1156,58 @@ func (p *tencentDNSProvider) CleanUp(domain, token, keyAuth string) error {
 	return p.deleteTXTRecord(rootDomain, subDomain, keyAuth)
 }
 
-// getRootDomain 获取主域名
+// knownDoubleSuffixes 常见的双后缀（二级公共后缀），如 .com.cn
+// 遇到这类后缀时，主域名需要取最后三个部分
+var knownDoubleSuffixes = map[string]bool{
+	// 中国
+	"com.cn": true, "net.cn": true, "org.cn": true, "gov.cn": true,
+	"edu.cn": true, "mil.cn": true, "ac.cn": true, "ah.cn": true,
+	"bj.cn": true, "cq.cn": true, "fj.cn": true, "gd.cn": true,
+	"gs.cn": true, "gx.cn": true, "gz.cn": true, "ha.cn": true,
+	"hb.cn": true, "he.cn": true, "hi.cn": true, "hk.cn": true,
+	"hl.cn": true, "hn.cn": true, "jl.cn": true, "js.cn": true,
+	"jx.cn": true, "ln.cn": true, "mo.cn": true, "nm.cn": true,
+	"nx.cn": true, "qh.cn": true, "sc.cn": true, "sd.cn": true,
+	"sh.cn": true, "sn.cn": true, "sx.cn": true, "tj.cn": true,
+	"tw.cn": true, "xj.cn": true, "xz.cn": true, "yn.cn": true,
+	"zj.cn": true,
+	// 英国
+	"co.uk": true, "org.uk": true, "me.uk": true, "net.uk": true,
+	"ltd.uk": true, "plc.uk": true, "gov.uk": true, "nhs.uk": true,
+	"sch.uk": true, "ac.uk": true, "police.uk": true,
+	// 澳大利亚
+	"com.au": true, "net.au": true, "org.au": true, "edu.au": true,
+	"gov.au": true, "asn.au": true, "id.au": true,
+	// 日本
+	"co.jp": true, "ne.jp": true, "or.jp": true, "ac.jp": true,
+	"ad.jp": true, "ed.jp": true, "go.jp": true,
+	// 其他常见
+	"com.hk": true, "org.hk": true, "net.hk": true, "gov.hk": true,
+	"com.tw": true, "org.tw": true, "net.tw": true, "gov.tw": true,
+	"com.sg": true, "org.sg": true, "net.sg": true, "gov.sg": true,
+	"com.br": true, "org.br": true, "net.br": true, "gov.br": true,
+	"com.ar": true, "com.mx": true, "com.co": true, "com.pe": true,
+	"com.nz": true, "co.nz": true, "org.nz": true, "net.nz": true,
+	"co.in": true, "net.in": true, "org.in": true, "gov.in": true,
+	"co.za": true, "org.za": true, "net.za": true, "gov.za": true,
+}
+
+// getRootDomain 获取主域名，正确处理双后缀（如 .com.cn）
 func (p *tencentDNSProvider) getRootDomain(domain string) (string, error) {
-	// 简单实现：获取最后两个部分作为主域名
-	// 例如：www.example.com -> example.com
-	// *.example.com -> example.com
 	domain = strings.TrimPrefix(domain, "*.")
 	parts := strings.Split(domain, ".")
 	if len(parts) < 2 {
 		return "", fmt.Errorf("无效的域名: %s", domain)
 	}
+	// 判断最后两部分是否构成已知的双后缀，例如 com.cn
+	if len(parts) >= 3 {
+		doubleSuffix := parts[len(parts)-2] + "." + parts[len(parts)-1]
+		if knownDoubleSuffixes[doubleSuffix] {
+			// 主域名需要取最后三个部分，如 geekcode.com.cn
+			return strings.Join(parts[len(parts)-3:], "."), nil
+		}
+	}
+	// 普通域名取最后两个部分，如 example.com
 	return strings.Join(parts[len(parts)-2:], "."), nil
 }
 
