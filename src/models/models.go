@@ -222,6 +222,15 @@ const (
 	CertificateDNSManual       CertificateDNSProvider = "manual"
 )
 
+// CertificateCA 证书颁发机构
+type CertificateCA string
+
+const (
+	CertificateCALetsEncrypt        CertificateCA = "letsencrypt"
+	CertificateCALetsEncryptStaging CertificateCA = "letsencrypt-staging"
+	CertificateCABuypass            CertificateCA = "buypass"
+)
+
 // CertificateStatus 证书状态
 type CertificateStatus string
 
@@ -298,6 +307,7 @@ type CertificateConfig struct {
 	AccountEmail    string                   `json:"account_email,omitempty"`
 	AutoRenew       bool                     `json:"auto_renew"`
 	RenewBeforeDays int                      `json:"renew_before_days"`
+	CA              CertificateCA            `json:"ca,omitempty"`
 
 	CertPath         string `json:"cert_path"`
 	KeyPath          string `json:"key_path"`
@@ -375,6 +385,15 @@ type GlobalConfig struct {
 	MaxSecurityLogEntries          int    `json:"max_security_log_entries"`          // 最大安全日志条数
 	CertificateConfigPath          string `json:"certificate_config_path"`           // 外部证书配置文件路径
 	CertificateSyncIntervalSeconds int    `json:"certificate_sync_interval_seconds"` // 外部证书同步周期
+
+	// 云服务商密钥配置
+	TencentCloudSecretId  string `json:"tencent_cloud_secret_id,omitempty"`  // 腾讯云 SecretId
+	TencentCloudSecretKey string `json:"tencent_cloud_secret_key,omitempty"` // 腾讯云 SecretKey
+	AliyunAccessKeyId     string `json:"aliyun_access_key_id,omitempty"`     // 阿里云 AccessKeyId
+	AliyunAccessKeySecret string `json:"aliyun_access_key_secret,omitempty"` // 阿里云 AccessKeySecret
+
+	// ACME 账户配置
+	ACMEAccountEmail string `json:"acme_account_email,omitempty"` // ACME 账户邮箱
 }
 
 // SecurityLogType 安全日志类型

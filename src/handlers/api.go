@@ -766,6 +766,13 @@ func GetConfigHandler(w http.ResponseWriter, r *http.Request) {
 		"max_access_log_entries":            cfg.Global.MaxAccessLogEntries,
 		"certificate_config_path":           cfg.Global.CertificateConfigPath,
 		"certificate_sync_interval_seconds": cfg.Global.CertificateSyncIntervalSeconds,
+		// 云服务商密钥（返回加密后的值）
+		"tencent_cloud_secret_id":           MaskSecret(cfg.Global.TencentCloudSecretId),
+		"tencent_cloud_secret_key":          MaskSecret(cfg.Global.TencentCloudSecretKey),
+		"aliyun_access_key_id":              MaskSecret(cfg.Global.AliyunAccessKeyId),
+		"aliyun_access_key_secret":          MaskSecret(cfg.Global.AliyunAccessKeySecret),
+		// ACME 账户配置
+		"acme_account_email":                cfg.Global.ACMEAccountEmail,
 		"effective_paths": map[string]string{
 			"pid_path":           config.RuntimePIDFilePath(),
 			"socket_path":        config.RuntimeSocketFilePath(),
@@ -773,26 +780,68 @@ func GetConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"security_logs_path": config.RuntimeSecurityLogCachePath(),
 			"managed_certs_dir":  config.RuntimeManagedCertDir(),
 			"account_certs_dir":  config.RuntimeAccountCertDir(),
-			"runtime_base_dir":  config.GetRuntimeBaseDir(),
-			"config_file_path":  config.ConfigFilePath(),
+			"runtime_base_dir":   config.GetRuntimeBaseDir(),
+			"config_file_path":   config.ConfigFilePath(),
 		},
 	})
 }
 
+// MaskSecret 脱敏显示密钥
+func MaskSecret(value string) string {
+	if value == "" {
+		return ""
+	}
+	if len(value) <= 8 {
+		return "****"
+	}
+	return value[:4] + "****" + value[len(value)-4:]
+}
+
 func UpdateConfigHandler(w http.ResponseWriter, r *http.Request) {
-	var global models.GlobalConfig
-	if err := json.NewDecoder(r.Body).Decode(&global); err != nil {
+	var req models.GlobalConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if err := config.GetManager().UpdateGlobal(global); err != nil {
+	// 获取当前配置
+	current := config.GetManager().GetConfig().Global
+
+	// 更新基本配置
+	current.LogRetentionDays = req.LogRetentionDays
+	current.MaxAccessLogEntries = req.MaxAccessLogEntries
+	current.CertificateConfigPath = req.CertificateConfigPath
+	current.CertificateSyncIntervalSeconds = req.CertificateSyncIntervalSeconds
+
+	// 更新 ACME 邮箱
+	current.ACMEAccountEmail = req.ACMEAccountEmail
+
+	// 更新密钥（如果提供了新值，不为空且不是脱敏值）
+	if req.TencentCloudSecretId != "" && !isMasked(req.TencentCloudSecretId) {
+		current.TencentCloudSecretId = req.TencentCloudSecretId
+	}
+	if req.TencentCloudSecretKey != "" && !isMasked(req.TencentCloudSecretKey) {
+		current.TencentCloudSecretKey = req.TencentCloudSecretKey
+	}
+	if req.AliyunAccessKeyId != "" && !isMasked(req.AliyunAccessKeyId) {
+		current.AliyunAccessKeyId = req.AliyunAccessKeyId
+	}
+	if req.AliyunAccessKeySecret != "" && !isMasked(req.AliyunAccessKeySecret) {
+		current.AliyunAccessKeySecret = req.AliyunAccessKeySecret
+	}
+
+	if err := config.GetManager().UpdateGlobal(current); err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	utils.GetCertificateManager().RunMaintenanceNow()
 
-	WriteSuccess(w, global)
+	WriteSuccess(w, current)
+}
+
+// isMasked 检查值是否为脱敏显示
+func isMasked(value string) bool {
+	return strings.Contains(value, "****")
 }
 
 // RestartServerHandler 重启代理服务器

@@ -5,9 +5,11 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -16,6 +18,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"os"
@@ -33,7 +36,6 @@ import (
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/providers/dns/alidns"
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
-	"github.com/go-acme/lego/v4/providers/dns/tencentcloud"
 	"github.com/go-acme/lego/v4/registration"
 )
 
@@ -190,6 +192,38 @@ func (m *CertificateManager) GetIssueProgress(certID string) *models.Certificate
 		copy := *progress
 		return &copy
 	}
+	return nil
+}
+
+// GetManualDNSChallenge 获取手动DNS验证信息
+func (m *CertificateManager) GetManualDNSChallenge(certID string) *manualDNSChallenge {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if challenge, ok := m.manualDNSStore[certID]; ok {
+		return challenge
+	}
+	return nil
+}
+
+// TriggerManualDNSVerification 触发手动DNS验证
+// 注意：这个方法只是标记验证已触发，实际的验证由lego库在后台进行
+func (m *CertificateManager) TriggerManualDNSVerification(certID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	challenge, ok := m.manualDNSStore[certID]
+	if !ok {
+		return fmt.Errorf("未找到手动DNS验证信息")
+	}
+	
+	// 更新进度，提示用户验证已触发
+	if progress, ok := m.issueProgress[certID]; ok {
+		progress.Message = "正在验证DNS记录"
+		progress.Detail = fmt.Sprintf("正在验证 %s 的TXT记录", challenge.domain)
+		progress.UpdatedAt = time.Now()
+	}
+	
+	fmt.Printf("[手动DNS验证 %s] 用户触发验证，域名: %s\n", certID, challenge.domain)
 	return nil
 }
 
@@ -905,6 +939,30 @@ func (m *CertificateManager) obtainACMEResource(cert models.CertificateConfig) (
 	}
 
 	legoConfig := lego.NewConfig(user)
+	
+	// 设置HTTP客户端超时
+	legoConfig.HTTPClient = &http.Client{
+		Timeout: 2 * time.Minute,
+		Transport: &http.Transport{
+			TLSHandshakeTimeout:   30 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			ExpectContinueTimeout: 10 * time.Second,
+		},
+	}
+	
+	// 根据CA配置设置CADirURL
+	switch cert.CA {
+	case models.CertificateCALetsEncryptStaging:
+		legoConfig.CADirURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
+		fmt.Printf("[证书申请 %s] 使用CA: Let's Encrypt Staging（测试环境）\n", cert.ID)
+	case models.CertificateCABuypass:
+		legoConfig.CADirURL = "https://api.buypass.com/acme/directory"
+		fmt.Printf("[证书申请 %s] 使用CA: Buypass\n", cert.ID)
+	default:
+		// 默认使用 Let's Encrypt 生产环境
+		fmt.Printf("[证书申请 %s] 使用CA: Let's Encrypt\n", cert.ID)
+	}
+	
 	client, err := lego.NewClient(legoConfig)
 	if err != nil {
 		m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "创建ACME客户端失败", err.Error())
@@ -957,27 +1015,13 @@ func (m *CertificateManager) obtainACMEResource(cert models.CertificateConfig) (
 	return resource, reg, nil
 }
 
-// 国内DNS服务器列表，用于替代Google DNS
-var chinaNameservers = []string{
-	"223.5.5.5:53",       // 阿里DNS
-	"223.6.6.6:53",       // 阿里DNS备用
-	"119.29.29.29:53",    // 腾讯DNS
-	"114.114.114.114:53", // 114DNS
-}
-
 func init() {
-	// 在程序启动时设置国内DNS服务器和超时，避免Google DNS超时
-	// 这会影响所有lego库的DNS查询，包括FindZoneByFqdn
+	// 设置DNS超时为30秒，避免DNS查询卡住
 	dns01.ClearFqdnCache()
-	// 设置DNS超时为30秒
 	if err := dns01.AddDNSTimeout(30 * time.Second)(nil); err != nil {
 		fmt.Printf("[DNS配置] 设置DNS超时失败: %v\n", err)
-	}
-	// 设置国内DNS服务器
-	if err := dns01.AddRecursiveNameservers(chinaNameservers)(nil); err != nil {
-		fmt.Printf("[DNS配置] 设置DNS服务器失败: %v\n", err)
 	} else {
-		fmt.Printf("[DNS配置] 已设置国内DNS服务器: %v，超时: 30秒\n", chinaNameservers)
+		fmt.Printf("[DNS配置] 已设置DNS超时: 30秒\n")
 	}
 }
 
@@ -991,13 +1035,10 @@ func (m *CertificateManager) configureChallengeProvider(client *lego.Client, cer
 			return err
 		}
 		fmt.Printf("[证书申请 %s] DNS provider创建成功: %s\n", cert.ID, cert.DNSProvider)
-		// 使用国内DNS服务器，避免Google DNS超时
-		// 同时禁用预检查，避免在Present之前进行DNS查询超时
+		// 配置DNS-01挑战：禁用预检查，避免在Present之前进行DNS查询超时
 		// 设置传播等待时间为60秒，跳过DNS传播检查（由provider自己处理）
-		// 清除FQDN缓存，确保使用新的DNS服务器
 		dns01.ClearFqdnCache()
 		return client.Challenge.SetDNS01Provider(provider, 
-			dns01.AddRecursiveNameservers(chinaNameservers),
 			dns01.AddDNSTimeout(30*time.Second),
 			dns01.DisableAuthoritativeNssPropagationRequirement(),
 			dns01.PropagationWait(60*time.Second, true),
@@ -1008,32 +1049,38 @@ func (m *CertificateManager) configureChallengeProvider(client *lego.Client, cer
 }
 
 func newDNSProvider(cert models.CertificateConfig) (challenge.Provider, error) {
+	// 从全局配置获取云服务商密钥
+	globalConfig := config.GetManager().GetConfig().Global
+	
 	switch cert.DNSProvider {
 	case models.CertificateDNSTencentCloud:
-		cfg := tencentcloud.NewDefaultConfig()
-		cfg.SecretID = strings.TrimSpace(cert.DNSConfig.TencentSecretID)
-		cfg.SecretKey = strings.TrimSpace(cert.DNSConfig.TencentSecretKey)
-		cfg.SessionToken = strings.TrimSpace(cert.DNSConfig.TencentSessionToken)
-		// DNSPod API 不需要 Region，设置为空
-		cfg.Region = ""
-		// 设置HTTP超时为60秒，避免API调用卡住
-		cfg.HTTPTimeout = 60 * time.Second
-		// 设置传播超时为120秒
-		cfg.PropagationTimeout = 120 * time.Second
-		// 添加调试日志
-		fmt.Printf("[腾讯云DNS] 配置信息: SecretID=%s, Region=%s, HTTPTimeout=%s, PropagationTimeout=%s\n", 
-			maskSecret(cfg.SecretID), cfg.Region, cfg.HTTPTimeout, cfg.PropagationTimeout)
-		provider, err := tencentcloud.NewDNSProviderConfig(cfg)
-		if err != nil {
-			fmt.Printf("[腾讯云DNS] 创建provider失败: %v\n", err)
-			return nil, fmt.Errorf("腾讯云DNS配置错误: %w", err)
+		// 获取密钥
+		secretID := strings.TrimSpace(globalConfig.TencentCloudSecretId)
+		secretKey := strings.TrimSpace(globalConfig.TencentCloudSecretKey)
+		if cert.DNSConfig.TencentSecretID != "" {
+			secretID = strings.TrimSpace(cert.DNSConfig.TencentSecretID)
+			secretKey = strings.TrimSpace(cert.DNSConfig.TencentSecretKey)
 		}
-		fmt.Printf("[腾讯云DNS] Provider创建成功\n")
-		return provider, nil
+		
+		if secretID == "" || secretKey == "" {
+			return nil, errors.New("腾讯云密钥未配置")
+		}
+		
+		fmt.Printf("[腾讯云DNS] 使用自定义Provider, SecretID=%s\n", maskSecret(secretID))
+		return &tencentDNSProvider{
+			secretID:  secretID,
+			secretKey: secretKey,
+		}, nil
 	case models.CertificateDNSAliDNS:
 		cfg := alidns.NewDefaultConfig()
-		cfg.APIKey = strings.TrimSpace(cert.DNSConfig.AliAccessKey)
-		cfg.SecretKey = strings.TrimSpace(cert.DNSConfig.AliSecretKey)
+		// 优先从证书配置读取，如果没有则从全局配置读取
+		if cert.DNSConfig.AliAccessKey != "" {
+			cfg.APIKey = strings.TrimSpace(cert.DNSConfig.AliAccessKey)
+			cfg.SecretKey = strings.TrimSpace(cert.DNSConfig.AliSecretKey)
+		} else {
+			cfg.APIKey = strings.TrimSpace(globalConfig.AliyunAccessKeyId)
+			cfg.SecretKey = strings.TrimSpace(globalConfig.AliyunAccessKeySecret)
+		}
 		// 设置HTTP超时为60秒
 		cfg.HTTPTimeout = 60 * time.Second
 		// 设置传播超时为120秒
@@ -1053,6 +1100,264 @@ func newDNSProvider(cert models.CertificateConfig) (challenge.Provider, error) {
 	default:
 		return nil, errors.New("当前 DNS 服务商暂不支持")
 	}
+}
+
+// tencentDNSProvider 腾讯云DNS provider（直接调用API）
+type tencentDNSProvider struct {
+	secretID  string
+	secretKey string
+}
+
+// Present 添加DNS TXT记录
+func (p *tencentDNSProvider) Present(domain, token, keyAuth string) error {
+	fmt.Printf("[腾讯云DNS] Present: domain=%s, keyAuth=%s\n", domain, keyAuth)
+	
+	// 获取主域名
+	rootDomain, err := p.getRootDomain(domain)
+	if err != nil {
+		return fmt.Errorf("获取主域名失败: %w", err)
+	}
+	
+	// 构建子域名
+	subDomain := "_acme-challenge"
+	if domain != rootDomain {
+		subDomain = "_acme-challenge." + strings.TrimSuffix(domain, "."+rootDomain)
+	}
+	
+	fmt.Printf("[腾讯云DNS] 添加记录: domain=%s, rootDomain=%s, subDomain=%s\n", domain, rootDomain, subDomain)
+	
+	// 调用腾讯云API添加TXT记录
+	return p.addTXTRecord(rootDomain, subDomain, keyAuth)
+}
+
+// CleanUp 删除DNS TXT记录
+func (p *tencentDNSProvider) CleanUp(domain, token, keyAuth string) error {
+	fmt.Printf("[腾讯云DNS] CleanUp: domain=%s\n", domain)
+	
+	// 获取主域名
+	rootDomain, err := p.getRootDomain(domain)
+	if err != nil {
+		return fmt.Errorf("获取主域名失败: %w", err)
+	}
+	
+	// 构建子域名
+	subDomain := "_acme-challenge"
+	if domain != rootDomain {
+		subDomain = "_acme-challenge." + strings.TrimSuffix(domain, "."+rootDomain)
+	}
+	
+	// 调用腾讯云API删除TXT记录
+	return p.deleteTXTRecord(rootDomain, subDomain, keyAuth)
+}
+
+// getRootDomain 获取主域名
+func (p *tencentDNSProvider) getRootDomain(domain string) (string, error) {
+	// 简单实现：获取最后两个部分作为主域名
+	// 例如：www.example.com -> example.com
+	// *.example.com -> example.com
+	domain = strings.TrimPrefix(domain, "*.")
+	parts := strings.Split(domain, ".")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("无效的域名: %s", domain)
+	}
+	return strings.Join(parts[len(parts)-2:], "."), nil
+}
+
+// tencentAPIResponse 腾讯云API响应
+type tencentAPIResponse struct {
+	Response struct {
+		Error struct {
+			Code    string `json:"Code"`
+			Message string `json:"Message"`
+		} `json:"Error"`
+		RequestId string `json:"RequestId"`
+	} `json:"Response"`
+}
+
+// addTXTRecord 添加TXT记录
+func (p *tencentDNSProvider) addTXTRecord(domain, subDomain, value string) error {
+	params := map[string]interface{}{
+		"Domain":     domain,
+		"SubDomain":  subDomain,
+		"RecordType": "TXT",
+		"RecordLine": "默认",
+		"Value":      value,
+		"TTL":        600,
+	}
+	
+	return p.callTencentAPI("CreateRecord", params)
+}
+
+// deleteTXTRecord 删除TXT记录
+func (p *tencentDNSProvider) deleteTXTRecord(domain, subDomain, value string) error {
+	// 先查询记录ID
+	recordID, err := p.getRecordID(domain, subDomain, value)
+	if err != nil {
+		fmt.Printf("[腾讯云DNS] 获取记录ID失败: %v\n", err)
+		return nil // 记录不存在，忽略错误
+	}
+	
+	if recordID == 0 {
+		fmt.Printf("[腾讯云DNS] 未找到记录，无需删除\n")
+		return nil
+	}
+	
+	params := map[string]interface{}{
+		"Domain":   domain,
+		"RecordId": recordID,
+	}
+	
+	return p.callTencentAPI("DeleteRecord", params)
+}
+
+// getRecordID 获取记录ID
+func (p *tencentDNSProvider) getRecordID(domain, subDomain, value string) (uint64, error) {
+	params := map[string]interface{}{
+		"Domain":     domain,
+		"Subdomain":  subDomain,
+		"RecordType": "TXT",
+	}
+	
+	resp, err := p.callTencentAPIWithResponse("DescribeRecordList", params)
+	if err != nil {
+		return 0, err
+	}
+	
+	// 解析响应获取记录ID
+	var result struct {
+		Response struct {
+			RecordList []struct {
+				RecordId   uint64 `json:"RecordId"`
+				Value      string `json:"Value"`
+				SubDomain  string `json:"Name"`
+			} `json:"RecordList"`
+			Error struct {
+				Code    string `json:"Code"`
+				Message string `json:"Message"`
+			} `json:"Error"`
+		} `json:"Response"`
+	}
+	
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return 0, err
+	}
+	
+	if result.Response.Error.Code != "" {
+		return 0, fmt.Errorf("API错误: %s - %s", result.Response.Error.Code, result.Response.Error.Message)
+	}
+	
+	for _, record := range result.Response.RecordList {
+		if record.SubDomain == subDomain && strings.Contains(record.Value, value) {
+			return record.RecordId, nil
+		}
+	}
+	
+	return 0, nil
+}
+
+// callTencentAPI 调用腾讯云API
+func (p *tencentDNSProvider) callTencentAPI(action string, params map[string]interface{}) error {
+	_, err := p.callTencentAPIWithResponse(action, params)
+	return err
+}
+
+// callTencentAPIWithResponse 调用腾讯云API并返回响应 (TC3-HMAC-SHA256签名)
+func (p *tencentDNSProvider) callTencentAPIWithResponse(action string, params map[string]interface{}) ([]byte, error) {
+	// 构建请求体 - 只包含业务参数，不包含公共参数
+	requestBody := params
+	
+	bodyJSON, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求体失败: %w", err)
+	}
+	
+	// 构建TC3-HMAC-SHA256签名
+	timestamp := time.Now().Unix()
+	date := time.Unix(timestamp, 0).UTC().Format("2006-01-02")
+	service := "dnspod"
+	host := "dnspod.tencentcloudapi.com"
+	
+	// 1. 构建规范请求
+	httpRequestMethod := "POST"
+	canonicalURI := "/"
+	canonicalQueryString := ""
+	canonicalHeaders := fmt.Sprintf("content-type:application/json\nhost:%s\nx-tc-action:%s\nx-tc-version:2021-03-23\n", host, strings.ToLower(action))
+	signedHeaders := "content-type;host;x-tc-action;x-tc-version"
+	payloadHash := sha256Hash(string(bodyJSON))
+	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
+		httpRequestMethod, canonicalURI, canonicalQueryString, canonicalHeaders, signedHeaders, payloadHash)
+	
+	// 2. 构建待签名字符串
+	algorithm := "TC3-HMAC-SHA256"
+	credentialScope := fmt.Sprintf("%s/%s/tc3_request", date, service)
+	stringToSign := fmt.Sprintf("%s\n%d\n%s\n%s",
+		algorithm, timestamp, credentialScope, sha256Hash(canonicalRequest))
+	
+	// 3. 计算签名
+	secretDate := hmacSHA256([]byte("TC3"+p.secretKey), date)
+	secretService := hmacSHA256(secretDate, service)
+	secretSigning := hmacSHA256(secretService, "tc3_request")
+	signature := hex.EncodeToString(hmacSHA256(secretSigning, stringToSign))
+	
+	// 4. 构建Authorization
+	authorization := fmt.Sprintf("%s Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		algorithm, p.secretID, credentialScope, signedHeaders, signature)
+	
+	// 发送请求
+	url := "https://" + host
+	req, err := http.NewRequest("POST", url, strings.NewReader(string(bodyJSON)))
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+	
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Host", host)
+	req.Header.Set("X-TC-Action", action)
+	req.Header.Set("X-TC-Version", "2021-03-23")
+	req.Header.Set("X-TC-Timestamp", fmt.Sprintf("%d", timestamp))
+	req.Header.Set("Authorization", authorization)
+	
+	fmt.Printf("[腾讯云DNS] 调用API: %s\n", action)
+	
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+	
+	fmt.Printf("[腾讯云DNS] API响应: %s\n", string(body))
+	
+	// 检查错误
+	var apiResp tencentAPIResponse
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return body, nil // 可能不是标准响应格式
+	}
+	
+	if apiResp.Response.Error.Code != "" {
+		return body, fmt.Errorf("API错误: %s - %s", apiResp.Response.Error.Code, apiResp.Response.Error.Message)
+	}
+	
+	return body, nil
+}
+
+// sha256Hash 计算SHA256哈希
+func sha256Hash(s string) string {
+	h := sha256.New()
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// hmacSHA256 计算HMAC-SHA256
+func hmacSHA256(key []byte, data string) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write([]byte(data))
+	return h.Sum(nil)
 }
 
 // manualDNSProvider 手动DNS验证provider
@@ -1210,6 +1515,62 @@ func parseCertificatePEM(certPEM, keyPEM []byte) (*tls.Certificate, certificateM
 		Issuer:    leaf.Issuer.CommonName,
 		ExpiresAt: &expiresAt,
 		Status:    status,
+	}, nil
+}
+
+// CertificateMetadata 证书元数据
+type CertificateMetadata struct {
+	Domains   []string
+	Issuer    string
+	ExpiresAt *time.Time
+}
+
+// GetCertificateMetadata 从证书文件读取元数据
+func GetCertificateMetadata(certPath, keyPath string) (CertificateMetadata, error) {
+	if certPath == "" {
+		return CertificateMetadata{}, errors.New("证书路径为空")
+	}
+
+	// 如果 keyPath 为空，尝试使用 certPath 对应的 key 路径
+	if keyPath == "" {
+		keyPath = strings.TrimSuffix(certPath, ".crt") + ".key"
+		keyPath = strings.TrimSuffix(keyPath, ".pem") + ".key"
+	}
+
+	certPEM, err := os.ReadFile(resolveCertificatePath(certPath))
+	if err != nil {
+		return CertificateMetadata{}, err
+	}
+
+	keyPEM, err := os.ReadFile(resolveCertificatePath(keyPath))
+	if err != nil {
+		// 尝试只读取证书（不验证密钥）
+		block, _ := pem.Decode(certPEM)
+		if block == nil {
+			return CertificateMetadata{}, errors.New("无法解析证书")
+		}
+		leaf, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return CertificateMetadata{}, err
+		}
+		domains := sanitizeDomains(append([]string{leaf.Subject.CommonName}, leaf.DNSNames...))
+		expiresAt := leaf.NotAfter
+		return CertificateMetadata{
+			Domains:   domains,
+			Issuer:    leaf.Issuer.CommonName,
+			ExpiresAt: &expiresAt,
+		}, nil
+	}
+
+	_, meta, err := parseCertificatePEM(certPEM, keyPEM)
+	if err != nil {
+		return CertificateMetadata{}, err
+	}
+
+	return CertificateMetadata{
+		Domains:   meta.Domains,
+		Issuer:    meta.Issuer,
+		ExpiresAt: meta.ExpiresAt,
 	}, nil
 }
 
@@ -1505,6 +1866,36 @@ func (m *CertificateManager) ensureFallbackCertificate() {
 	m.fallback = &fallback
 }
 
+// GetFallbackCertificateInfo 返回内置 fallback 自签证书的展示信息（只读）。
+func (m *CertificateManager) GetFallbackCertificateInfo() *models.CertificateConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.fallback == nil || len(m.fallback.Certificate) == 0 {
+		return nil
+	}
+	cert, err := x509.ParseCertificate(m.fallback.Certificate[0])
+	if err != nil {
+		return nil
+	}
+	now := time.Now()
+	expiresAt := cert.NotAfter
+	cfg := &models.CertificateConfig{
+		ID:        "__fallback__",
+		Name:      "内置自签证书",
+		Domains:   cert.DNSNames,
+		Source:    models.CertificateSourceImported,
+		Status:    models.CertificateStatusValid,
+		Issuer:    cert.Issuer.CommonName,
+		ExpiresAt: &expiresAt,
+		CreatedAt: cert.NotBefore,
+		UpdatedAt: now,
+	}
+	if len(cfg.Domains) == 0 && cert.Subject.CommonName != "" {
+		cfg.Domains = []string{cert.Subject.CommonName}
+	}
+	return cfg
+}
+
 func randomID() string {
 	return fmt.Sprintf("cert-%d", time.Now().UnixNano())
 }
@@ -1518,4 +1909,99 @@ func maskSecret(value string) string {
 		return "****"
 	}
 	return value[:2] + "****" + value[len(value)-2:]
+}
+
+// GenerateSelfSignedCertificate 生成自签证书
+func (m *CertificateManager) GenerateSelfSignedCertificate(domains []string) (*models.CertificateConfig, error) {
+	if len(domains) == 0 {
+		return nil, errors.New("domains are required")
+	}
+
+	// 生成私钥
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("生成私钥失败: %w", err)
+	}
+
+	// 构建证书模板
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("生成序列号失败: %w", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"fnproxy-panel"},
+			CommonName:   domains[0],
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour), // 1年有效期
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              domains,
+	}
+
+	// 生成证书
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("生成证书失败: %w", err)
+	}
+
+	// 编码证书和私钥
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	
+	keyBytes, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("编码私钥失败: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	// 保存到文件
+	certID := randomID()
+	certDir := "./certs"
+	certPath := filepath.Join(certDir, certID+".crt")
+	keyPath := filepath.Join(certDir, certID+".key")
+
+	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
+		return nil, fmt.Errorf("保存证书失败: %w", err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return nil, fmt.Errorf("保存私钥失败: %w", err)
+	}
+
+	// 创建证书配置
+	now := time.Now()
+	expiresAt := now.Add(365 * 24 * time.Hour)
+	certConfig := models.CertificateConfig{
+		ID:              certID,
+		Name:            domains[0] + " (自签证书)",
+		Domains:         domains,
+		Source:          models.CertificateSourceImported,
+		CertPath:        certPath,
+		KeyPath:         keyPath,
+		Status:          models.CertificateStatusValid,
+		Issuer:          "fnproxy-panel Self-Signed",
+		ExpiresAt:       &expiresAt,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		CertFileUpdatedAt: &now,
+		KeyFileUpdatedAt:  &now,
+	}
+
+	// 保存到配置
+	if err := config.GetManager().AddCertificate(certConfig); err != nil {
+		return nil, fmt.Errorf("保存证书配置失败: %w", err)
+	}
+
+	// 加载证书
+	m.mu.Lock()
+	m.loaded[certID] = &loadedCertificate{
+		config: certConfig,
+	}
+	m.mu.Unlock()
+
+	fmt.Printf("[自签证书 %s] 生成成功，域名: %v\n", certID, domains)
+	return &certConfig, nil
 }

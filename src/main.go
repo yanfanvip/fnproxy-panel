@@ -301,6 +301,30 @@ func main() {
 			}
 			return
 		}
+		if strings.HasSuffix(path, "/verify-manual-dns") {
+			if r.Method == http.MethodPost {
+				handlers.VerifyManualDNSHandler(w, r)
+			} else {
+				handlers.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			}
+			return
+		}
+		if strings.HasSuffix(path, "/download") {
+			if r.Method == http.MethodGet {
+				handlers.DownloadCertificateHandler(w, r)
+			} else {
+				handlers.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			}
+			return
+		}
+		if path == "self-signed" {
+			if r.Method == http.MethodPost {
+				handlers.GenerateSelfSignedCertificateHandler(w, r)
+			} else {
+				handlers.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			}
+			return
+		}
 
 		switch r.Method {
 		case http.MethodGet:

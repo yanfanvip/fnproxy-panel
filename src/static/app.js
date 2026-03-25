@@ -111,6 +111,8 @@ function bindEvents() {
 
     // 设置表单
     document.getElementById('settingsForm').addEventListener('submit', handleSaveSettings);
+    document.getElementById('cloudKeysForm').addEventListener('submit', handleSaveCloudKeys);
+    document.getElementById('acmeAccountForm').addEventListener('submit', handleSaveACMEAccount);
     document.addEventListener('fullscreenchange', handleTerminalFullscreenChange);
 }
 
@@ -2017,7 +2019,7 @@ async function loadCertificates() {
     const mobileList = document.getElementById('certificatesMobileList');
     if (!tbody) return;
 
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:#64748b; padding:32px;">正在加载证书列表...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#64748b; padding:32px;">正在加载证书列表...</td></tr>';
     if (mobileList) {
         mobileList.innerHTML = '<div class="certificate-mobile-card-empty">正在加载证书列表...</div>';
     }
@@ -2025,18 +2027,19 @@ async function loadCertificates() {
     try {
         const certs = await fetchCertificateOptions(true);
         if (!certs.length) {
-            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:#64748b; padding:40px;">暂无证书配置，可创建 ACME 自动续签证书或导入现有证书。</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#64748b; padding:40px;">暂无证书配置，可创建 ACME 自动续签证书或导入现有证书。</td></tr>';
             if (mobileList) {
                 mobileList.innerHTML = '<div class="certificate-mobile-card-empty">暂无证书配置，可创建 ACME 自动续签证书或导入现有证书。</div>';
             }
             return;
         }
 
-        tbody.innerHTML = certs.map(cert => `
+        tbody.innerHTML = certs.map(cert => {
+            const isFallback = cert.id === '__fallback__';
+            return `
             <tr>
-                <td class="service-name-cell">${escapeHtml(cert.name || cert.domains?.[0] || '未命名证书')}</td>
-                <td>${renderCertificateDomains(cert.domains || [])}</td>
-                <td class="cert-col-short">${formatCertificateSource(cert.source)}</td>
+                <td class="service-name-cell">${renderCertificateDomains(cert.domains || [])}</td>
+                <td class="cert-col-short">${isFallback ? '内置自签' : formatCertificateSource(cert.source)}</td>
                 <td class="cert-col-short">${formatCertificateChallenge(cert.challenge_type)}</td>
                 <td class="cert-col-short">${formatDNSProvider(cert.dns_provider)}</td>
                 <td>${formatDateTime(cert.expires_at)}</td>
@@ -2046,17 +2049,19 @@ async function loadCertificates() {
                     ${cert.last_error ? `<div class="cert-error-text">${escapeHtml(cert.last_error)}</div>` : ''}
                 </td>
                 <td class="service-actions-cell">
-                    <button class="btn icon-btn" title="${cert.source === 'file_sync' ? '配置文件同步证书请修改外部配置文件' : '编辑证书'}" onclick="editCertificate('${cert.id}')">✏️</button>
-                    <button class="btn ${cert.source === 'acme' ? 'btn-primary' : ''} icon-btn" title="立即续签" ${cert.source !== 'acme' ? 'disabled' : ''} onclick="renewCertificate('${cert.id}')">↻</button>
-                    <button class="btn btn-danger icon-btn" title="删除证书" onclick="deleteCertificate('${cert.id}')">🗑</button>
+                    <button class="btn icon-btn" title="下载证书" onclick="downloadCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>📥</button>
+                    <button class="btn icon-btn" title="${cert.source === 'file_sync' ? '配置文件同步证书请修改外部配置文件' : '编辑证书'}" onclick="editCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>✏️</button>
+                    <button class="btn ${cert.source === 'acme' ? 'btn-primary' : ''} icon-btn" title="立即续签" ${(cert.source !== 'acme' || isFallback) ? 'disabled' : ''} onclick="renewCertificate('${cert.id}')">↻</button>
+                    <button class="btn btn-danger icon-btn" title="删除证书" onclick="deleteCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>🗑</button>
                 </td>
             </tr>
-        `).join('');
+        `;
+        }).join('');
 
         if (mobileList) {
             mobileList.innerHTML = certs.map(cert => {
-                const name = escapeHtml(cert.name || cert.domains?.[0] || '未命名证书');
-                const source = escapeHtml(formatCertificateSource(cert.source));
+                const isFallback = cert.id === '__fallback__';
+                const source = escapeHtml(isFallback ? '内置自签' : formatCertificateSource(cert.source));
                 const challenge = escapeHtml(formatCertificateChallenge(cert.challenge_type));
                 const dnsProvider = escapeHtml(formatDNSProvider(cert.dns_provider));
                 const expiresAt = escapeHtml(formatDateTime(cert.expires_at));
@@ -2067,7 +2072,7 @@ async function loadCertificates() {
                 <div class="certificate-mobile-card">
                     <div class="certificate-mobile-card-header">
                         <div class="certificate-mobile-card-title">
-                            <div class="certificate-mobile-card-name">${name}</div>
+                            <div class="certificate-mobile-card-name">${renderCertificateDomains(cert.domains || [])}</div>
                             <div class="certificate-mobile-card-meta">${source} / ${challenge}</div>
                         </div>
                         <div>
@@ -2075,10 +2080,6 @@ async function loadCertificates() {
                         </div>
                     </div>
                     <div class="certificate-mobile-card-details">
-                        <div class="certificate-mobile-card-detail">
-                            <div class="certificate-mobile-card-label">域名</div>
-                            <div class="certificate-mobile-card-value">${renderCertificateDomains(cert.domains || [])}</div>
-                        </div>
                         <div class="certificate-mobile-card-detail">
                             <div class="certificate-mobile-card-label">DNS</div>
                             <div class="certificate-mobile-card-value">${dnsProvider}</div>
@@ -2094,47 +2095,71 @@ async function loadCertificates() {
                     </div>
                     ${lastError}
                     <div class="certificate-mobile-card-actions">
-                        <button class="btn icon-btn" title="${cert.source === 'file_sync' ? '配置文件同步证书请修改外部配置文件' : '编辑证书'}" onclick="editCertificate('${cert.id}')">✏️</button>
-                        <button class="btn ${cert.source === 'acme' ? 'btn-primary' : ''} icon-btn" title="立即续签" ${cert.source !== 'acme' ? 'disabled' : ''} onclick="renewCertificate('${cert.id}')">↻</button>
-                        <button class="btn btn-danger icon-btn" title="删除证书" onclick="deleteCertificate('${cert.id}')">🗑</button>
+                        <button class="btn icon-btn" title="下载证书" onclick="downloadCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>📥</button>
+                        <button class="btn icon-btn" title="${cert.source === 'file_sync' ? '配置文件同步证书请修改外部配置文件' : '编辑证书'}" onclick="editCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>✏️</button>
+                        <button class="btn ${cert.source === 'acme' ? 'btn-primary' : ''} icon-btn" title="立即续签" ${(cert.source !== 'acme' || isFallback) ? 'disabled' : ''} onclick="renewCertificate('${cert.id}')">↻</button>
+                        <button class="btn btn-danger icon-btn" title="删除证书" onclick="deleteCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>🗑</button>
                     </div>
                 </div>
                 `;
             }).join('');
         }
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:#dc2626; padding:32px;">${escapeHtml(err.message || '网络错误，请稍后重试。')}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:#dc2626; padding:32px;">${escapeHtml(err.message || '网络错误，请稍后重试。')}</td></tr>`;
         if (mobileList) {
             mobileList.innerHTML = `<div class="certificate-mobile-card-empty" style="color:#dc2626;">${escapeHtml(err.message || '网络错误，请稍后重试。')}</div>`;
         }
     }
 }
 
-function getCertificateProviderFieldsHTML(provider, dnsConfig = {}) {
+async function getCertificateProviderFieldsHTML(provider, dnsConfig = {}) {
+    // 获取全局配置
+    let globalConfig = {};
+    try {
+        const data = await apiRequest('/config');
+        if (data.success && data.data) {
+            globalConfig = data.data;
+        }
+    } catch (err) {
+        console.error('Failed to get global config:', err);
+    }
+
     switch (provider) {
         case 'tencentcloud':
+            const hasTencentConfig = globalConfig.tencent_cloud_secret_id && globalConfig.tencent_cloud_secret_key;
+            if(hasTencentConfig){ return null }
             return `
                 <div class="cert-provider-fields">
-                    <div class="form-group">
-                        ${labelWithHint('Secret ID *', '腾讯云 API 访问密钥 ID')}
-                        <input type="text" id="certTencentSecretId" class="form-control" value="${escapeHtml(dnsConfig.tencent_secret_id || '')}">
-                    </div>
                     <div class="form-group" style="margin-bottom:0;">
-                        ${labelWithHint('Secret Key *', '腾讯云 API 访问密钥 Secret')}
-                        <input type="password" id="certTencentSecretKey" class="form-control" value="${escapeHtml(dnsConfig.tencent_secret_key || '')}">
+                        <div style="background: ${hasTencentConfig ? '#f0fdf4' : '#f0f9ff'}; border: 1px solid ${hasTencentConfig ? '#86efac' : '#bae6fd'}; border-radius: 8px; padding: 12px; font-size: 13px; color: ${hasTencentConfig ? '#166534' : '#0369a1'};">
+                            <div style="font-weight: 600; margin-bottom: 8px;">
+                                ${hasTencentConfig ? '✓ 腾讯云密钥已配置' : '腾讯云 DNS 验证'}
+                            </div>
+                            <div style="line-height: 1.6;">
+                                ${hasTencentConfig 
+                                    ? '系统将使用设置页面配置的腾讯云密钥进行 DNS 验证。' 
+                                    : '系统将自动使用在<a href="#" onclick="showPage(\'settings\')" style="color: #0284c7; text-decoration: underline;">设置页面</a>配置的腾讯云密钥。<br>如果尚未配置，请先前往设置页面添加密钥。'}
+                            </div>
+                        </div>
                     </div>
                 </div>
             `;
         case 'alidns':
+            const hasAliyunConfig = globalConfig.aliyun_access_key_id && globalConfig.aliyun_access_key_secret;
+            if(hasAliyunConfig){ return null }
             return `
                 <div class="cert-provider-fields">
-                    <div class="form-group">
-                        ${labelWithHint('Access Key *', '阿里云账号的 AccessKey ID')}
-                        <input type="text" id="certAliAccessKey" class="form-control" value="${escapeHtml(dnsConfig.ali_access_key || '')}">
-                    </div>
                     <div class="form-group" style="margin-bottom:0;">
-                        ${labelWithHint('Secret Key *', '阿里云账号的 AccessKey Secret')}
-                        <input type="password" id="certAliSecretKey" class="form-control" value="${escapeHtml(dnsConfig.ali_secret_key || '')}">
+                        <div style="background: ${hasAliyunConfig ? '#f0fdf4' : '#f0f9ff'}; border: 1px solid ${hasAliyunConfig ? '#86efac' : '#bae6fd'}; border-radius: 8px; padding: 12px; font-size: 13px; color: ${hasAliyunConfig ? '#166534' : '#0369a1'};">
+                            <div style="font-weight: 600; margin-bottom: 8px;">
+                                ${hasAliyunConfig ? '✓ 阿里云密钥已配置' : '阿里云 DNS 验证'}
+                            </div>
+                            <div style="line-height: 1.6;">
+                                ${hasAliyunConfig 
+                                    ? '系统将使用设置页面配置的阿里云密钥进行 DNS 验证。' 
+                                    : '系统将自动使用在<a href="#" onclick="showPage(\'settings\')" style="color: #0284c7; text-decoration: underline;">设置页面</a>配置的阿里云密钥。<br>如果尚未配置，请先前往设置页面添加密钥。'}
+                            </div>
+                        </div>
                     </div>
                 </div>
             `;
@@ -2191,16 +2216,34 @@ function toggleCertificateChallengeFields() {
         return;
     }
 
-    const challengeType = document.getElementById('certChallengeType')?.value || 'http01';
+    const challengeTypeSelect = document.getElementById('certChallengeType');
+    const challengeType = challengeTypeSelect?.value || 'dns01';
     const isACME = source === 'acme';
+
+    // 检查是否有泛域名
+    const domainInput = document.getElementById('certDomain')?.value || '';
+    const hasWildcard = domainInput.trim().startsWith('*.');
+    
+    // 如果有泛域名，强制使用DNS校验
+    if (hasWildcard && challengeTypeSelect) {
+        challengeTypeSelect.value = 'dns01';
+        challengeTypeSelect.disabled = true;
+        document.getElementById('certChallengeWarning')?.classList.remove('hidden');
+    } else if (challengeTypeSelect) {
+        challengeTypeSelect.disabled = false;
+        document.getElementById('certChallengeWarning')?.classList.add('hidden');
+    }
+    
+    // 重新获取challengeType（可能被上面修改了）
+    const finalChallengeType = challengeTypeSelect?.value || 'dns01';
 
     challengeGroup.classList.toggle('hidden', !isACME);
     renewGroup.classList.toggle('hidden', !isACME);
     importGroup.classList.toggle('hidden', isACME);
-    dnsProviderGroup.classList.toggle('hidden', !isACME || challengeType !== 'dns01');
-    dnsFields.classList.toggle('hidden', !isACME || challengeType !== 'dns01');
+    dnsProviderGroup.classList.toggle('hidden', !isACME || finalChallengeType !== 'dns01');
+    dnsFields.classList.toggle('hidden', !isACME || finalChallengeType !== 'dns01');
 
-    if (isACME && challengeType === 'dns01') {
+    if (isACME && finalChallengeType === 'dns01') {
         toggleCertificateProviderFields();
     } else {
         dnsFields.innerHTML = '';
@@ -2208,15 +2251,38 @@ function toggleCertificateChallengeFields() {
     scheduleModalHeightUpdate();
 }
 
-function toggleCertificateProviderFields() {
+async function toggleCertificateProviderFields() {
     const fields = document.getElementById('certDNSProviderFields');
     if (!fields) return;
     const provider = document.getElementById('certDNSProvider')?.value || '';
-    fields.innerHTML = getCertificateProviderFieldsHTML(provider);
+    fields.innerHTML = await getCertificateProviderFieldsHTML(provider);
+    
+    // 自动填充系统配置的密钥
+    autoFillCloudCredentials(provider);
+    
     scheduleModalHeightUpdate();
 }
 
-function showCertificateModal(mode = 'acme', certificate = null) {
+// 获取全局 ACME 邮箱
+async function getGlobalACMEEmail() {
+    try {
+        const data = await apiRequest('/config');
+        if (data.success && data.data) {
+            return data.data.acme_account_email || '';
+        }
+    } catch (err) {
+        console.error('Failed to get global ACME email:', err);
+    }
+    return '';
+}
+
+// 自动填充云服务商密钥（仅用于 Cloudflare）
+async function autoFillCloudCredentials(provider) {
+    // 腾讯云和阿里云密钥从全局配置读取，不需要在表单中填充
+    // Cloudflare 需要用户每次输入，也可以考虑从全局配置读取
+}
+
+async function showCertificateModal(mode = 'acme', certificate = null) {
     const isEdit = !!certificate;
     const source = certificate?.source || mode;
     const isImport = source === 'imported' || source === 'import';
@@ -2231,27 +2297,31 @@ function showCertificateModal(mode = 'acme', certificate = null) {
     document.getElementById('modalConfirm').textContent = isEdit ? '保存' : (isImport ? '导入' : '申请');
     document.getElementById('modalBody').innerHTML = `
         <form id="certificateForm">
+            <input type="hidden" id="certSource" value="${isImport ? 'imported' : 'acme'}">
             <div class="form-group">
-                ${labelWithHint('管理模式', 'ACME 证书支持自动签发和续签，导入证书用于接入已有证书文件')}
-                <select id="certSource" class="form-control" onchange="toggleCertificateChallengeFields()" ${isEdit ? 'disabled' : ''}>
-                    <option value="acme" ${!isImport ? 'selected' : ''}>ACME 自动签发/续签</option>
-                    <option value="imported" ${isImport ? 'selected' : ''}>导入现有证书</option>
+                ${labelWithHint('域名 *', '输入要申请证书的域名，例如：example.com 或 *.example.com（泛域名）')}
+                <input type="text" id="certDomain" class="form-control" value="${escapeHtml((certificate?.domains || [])[0] || '')}" placeholder="example.com" oninput="toggleCertificateChallengeFields()">
+                <small class="helper-text" style="margin-top: 6px; display: block; color: var(--text-secondary);">
+                    支持普通域名（example.com）和泛域名（*.example.com）。泛域名必须使用 DNS 校验方式。
+                </small>
+            </div>
+            <div class="form-group ${isImport ? 'hidden' : ''}">
+                ${labelWithHint('ACME CA', '选择证书颁发机构，默认使用 Let\'s Encrypt')}
+                <select id="certCA" class="form-control">
+                    <option value="letsencrypt" ${!certificate?.ca || certificate?.ca === 'letsencrypt' ? 'selected' : ''}>Let\'s Encrypt</option>
+                    <option value="buypass" ${certificate?.ca === 'buypass' ? 'selected' : ''}>Buypass</option>
+                    <option value="letsencrypt-staging" ${certificate?.ca === 'letsencrypt-staging' ? 'selected' : ''}>Let\'s Encrypt 测试</option>
                 </select>
-            </div>
-            <div class="form-group">
-                ${labelWithHint('证书名称', '用于后台展示，便于区分多张证书')}
-                <input type="text" id="certName" class="form-control" value="${escapeHtml(certificate?.name || '')}" placeholder="例如：官网证书 / 通配符证书">
-            </div>
-            <div class="form-group">
-                ${labelWithHint('域名列表 *', '一行一个或用逗号分隔，HTTPS 会按这些域名自动匹配证书')}
-                <textarea id="certDomains" class="form-control" rows="3" placeholder="example.com, www.example.com 或每行一个域名">${escapeHtml((certificate?.domains || []).join('\n'))}</textarea>
             </div>
             <div id="certChallengeGroup" class="form-group ${isImport ? 'hidden' : ''}">
                 ${labelWithHint('校验方式', '文件校验要求 HTTP 80 可达，DNS 校验适合通配符证书')}
                 <select id="certChallengeType" class="form-control" onchange="toggleCertificateChallengeFields()">
-                    <option value="http01" ${certificate?.challenge_type === 'http01' || !certificate?.challenge_type ? 'selected' : ''}>文件校验（HTTP-01）</option>
-                    <option value="dns01" ${certificate?.challenge_type === 'dns01' ? 'selected' : ''}>DNS 校验（DNS-01）</option>
+                    <option value="dns01" ${certificate?.challenge_type === 'dns01' || !certificate?.challenge_type ? 'selected' : ''}>DNS 校验（DNS-01）</option>
+                    <option value="http01" ${certificate?.challenge_type === 'http01' ? 'selected' : ''}>文件校验（HTTP-01）</option>
                 </select>
+                <div id="certChallengeWarning" class="hidden" style="margin-top: 8px; padding: 8px 12px; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; font-size: 12px; color: #92400e;">
+                    检测到泛域名（*.example.com），必须使用 DNS 校验方式
+                </div>
             </div>
             <div id="certDNSProviderGroup" class="form-group hidden">
                 ${labelWithHint('DNS 服务商', '选择用于创建 TXT 验证记录的 DNS 平台')}
@@ -2265,15 +2335,7 @@ function showCertificateModal(mode = 'acme', certificate = null) {
             <div id="certDNSProviderFields" class="form-group hidden"></div>
             <div id="certRenewConfigGroup" class="${isImport ? 'hidden' : ''}">
                 <div class="form-group">
-                    ${labelWithHint('账户邮箱（可选）', '用于 ACME 账户注册和证书通知')}
-                    <input type="email" id="certAccountEmail" class="form-control" value="${escapeHtml(certificate?.account_email || '')}" placeholder="admin@example.com">
-                </div>
-                <div class="form-group">
-                    ${checkboxLabelWithHint('启用自动续签', '到达续签时间后由系统自动尝试续签', 'certAutoRenew', certificate?.auto_renew ?? true)}
-                </div>
-                <div class="form-group">
-                    ${labelWithHint('提前续签天数', '距离到期多少天时开始自动续签')}
-                    <input type="number" id="certRenewBeforeDays" class="form-control" value="${certificate?.renew_before_days || 30}" min="1" max="90">
+                    ${checkboxLabelWithHint('启用自动续签', '到达续签时间后由系统自动尝试续签（默认提前15天）', 'certAutoRenew', certificate?.auto_renew ?? true)}
                 </div>
             </div>
             <div id="certImportPemGroup" class="${isImport ? '' : 'hidden'}">
@@ -2293,53 +2355,36 @@ function showCertificateModal(mode = 'acme', certificate = null) {
     document.getElementById('modal').classList.add('active');
     toggleCertificateChallengeFields();
     if (certificate?.dns_config && certificate.challenge_type === 'dns01') {
-        document.getElementById('certDNSProviderFields').innerHTML = getCertificateProviderFieldsHTML(certificate.dns_provider, certificate.dns_config);
+        const html = await getCertificateProviderFieldsHTML(certificate.dns_provider, certificate.dns_config);
+        document.getElementById('certDNSProviderFields').innerHTML = html;
         scheduleModalHeightUpdate();
     }
 }
 
-function getCertificateRequestBody() {
+async function getCertificateRequestBody() {
     const sourceSelect = document.getElementById('certSource');
     const source = sourceSelect?.value || sourceSelect?.getAttribute('value') || 'acme';
-    const challengeType = document.getElementById('certChallengeType')?.value || 'http01';
+    const challengeType = document.getElementById('certChallengeType')?.value || 'dns01';
     const dnsProvider = document.getElementById('certDNSProvider')?.value || '';
-    const domains = (document.getElementById('certDomains').value || '')
-        .split(/[\n,]+/)
-        .map(item => item.trim())
-        .filter(Boolean);
+    const ca = document.getElementById('certCA')?.value || 'letsencrypt';
+    const domain = (document.getElementById('certDomain').value || '').trim();
+    const domains = domain ? [domain] : [];
 
     const body = {
         source,
-        name: document.getElementById('certName').value.trim(),
-        domains
+        name: domain, // 使用域名作为证书名称
+        domains,
+        ca
     };
 
     if (source === 'acme') {
         body.challenge_type = challengeType;
         body.dns_provider = challengeType === 'dns01' ? dnsProvider : '';
-        body.account_email = document.getElementById('certAccountEmail').value.trim();
+        body.account_email = await getGlobalACMEEmail(); // 从设置页面获取
         body.auto_renew = !!document.getElementById('certAutoRenew').checked;
-        body.renew_before_days = parseInt(document.getElementById('certRenewBeforeDays').value || '30', 10) || 30;
+        body.renew_before_days = 15; // 默认15天
+        // 不再保存 API 密钥到证书配置，从全局配置读取
         body.dns_config = {};
-
-        if (challengeType === 'dns01') {
-            switch (dnsProvider) {
-                case 'tencentcloud':
-                    body.dns_config.tencent_secret_id = document.getElementById('certTencentSecretId')?.value.trim() || '';
-                    body.dns_config.tencent_secret_key = document.getElementById('certTencentSecretKey')?.value || '';
-                    break;
-                case 'alidns':
-                    body.dns_config.ali_access_key = document.getElementById('certAliAccessKey')?.value.trim() || '';
-                    body.dns_config.ali_secret_key = document.getElementById('certAliSecretKey')?.value || '';
-                    break;
-                case 'cloudflare':
-                    body.dns_config.cloudflare_dns_api_token = document.getElementById('certCloudflareDnsToken')?.value || '';
-                    body.dns_config.cloudflare_zone_token = document.getElementById('certCloudflareZoneToken')?.value || '';
-                    body.dns_config.cloudflare_email = document.getElementById('certCloudflareEmail')?.value.trim() || '';
-                    body.dns_config.cloudflare_api_key = document.getElementById('certCloudflareApiKey')?.value || '';
-                    break;
-            }
-        }
     } else {
         body.cert_pem = '';
         body.key_pem = '';
@@ -2349,7 +2394,7 @@ function getCertificateRequestBody() {
 }
 
 async function saveCertificate() {
-    const body = getCertificateRequestBody();
+    const body = await getCertificateRequestBody();
     const isEdit = !!currentCertificateEditId;
     const certFile = document.getElementById('certPemFile')?.files?.[0] || null;
     const keyFile = document.getElementById('certKeyPemFile')?.files?.[0] || null;
@@ -2369,6 +2414,30 @@ async function saveCertificate() {
     if (body.source === 'acme' && body.challenge_type === 'dns01' && !body.dns_provider) {
         showToast('请选择 DNS 服务商', 'error');
         return;
+    }
+
+    // 检查全局配置中的 API 密钥
+    if (body.source === 'acme' && body.challenge_type === 'dns01') {
+        const config = await apiRequest('/config');
+        if (!config.success || !config.data) {
+            showToast('读取系统配置失败', 'error');
+            return;
+        }
+
+        switch (body.dns_provider) {
+            case 'tencentcloud':
+                if (!config.data.tencent_cloud_secret_id || !config.data.tencent_cloud_secret_key) {
+                    showToast('请先前往设置页面配置腾讯云密钥', 'error');
+                    return;
+                }
+                break;
+            case 'alidns':
+                if (!config.data.aliyun_access_key_id || !config.data.aliyun_access_key_secret) {
+                    showToast('请先前往设置页面配置阿里云密钥', 'error');
+                    return;
+                }
+                break;
+        }
     }
 
     try {
@@ -2491,6 +2560,43 @@ async function deleteCertificate(id) {
     }
 }
 
+// 下载证书
+function downloadCertificate(id) {
+    const url = `/api/certificates/${id}/download`;
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${id}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('证书下载已开始', 'success');
+}
+
+// 生成自签证书
+async function generateSelfSignedCertificate() {
+    const domain = prompt('请输入要生成自签证书的域名：');
+    if (!domain || !domain.trim()) {
+        showToast('请输入有效的域名', 'error');
+        return;
+    }
+
+    try {
+        showToast('正在生成自签证书...', 'info');
+        const data = await apiRequest('/api/certificates/self-signed', {
+            method: 'POST',
+            body: JSON.stringify({ domains: [domain.trim()] })
+        });
+        if (data.success) {
+            showToast('自签证书生成成功', 'success');
+            loadCertificates();
+        } else {
+            showToast(data.error || '生成自签证书失败', 'error');
+        }
+    } catch (err) {
+        showToast('网络错误，请稍后重试', 'error');
+    }
+}
+
 // 证书申请进度跟踪
 let certProgressInterval = null;
 let currentCertProgressId = null;
@@ -2604,7 +2710,7 @@ async function fetchCertProgress(certId) {
         }
         
         const progress = data.data;
-        updateCertProgressUI(progress);
+        updateCertProgressUI(progress, certId);
         
         // 如果已完成或出错，停止轮询
         if (progress.status === 'success' || progress.status === 'error') {
@@ -2628,7 +2734,7 @@ async function fetchCertProgress(certId) {
 }
 
 // 更新进度UI
-function updateCertProgressUI(progress) {
+function updateCertProgressUI(progress, certId) {
     const timeline = document.getElementById('certProgressTimeline');
     const detail = document.getElementById('certProgressDetail');
     
@@ -2663,14 +2769,14 @@ function updateCertProgressUI(progress) {
     
     // 显示TXT记录（如果有）
     if (progress.txt_records && progress.txt_records.length > 0) {
-        detailHtml += renderDNSTXTRecords(progress.txt_records);
+        detailHtml += renderDNSTXTRecords(progress.txt_records, certId);
     }
     
     detail.innerHTML = detailHtml;
 }
 
 // 渲染DNS TXT记录
-function renderDNSTXTRecords(records) {
+function renderDNSTXTRecords(records, certId) {
     return `
         <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
             <div style="font-weight: 600; margin-bottom: 12px; color: #334155;">请添加以下DNS TXT记录：</div>
@@ -2690,11 +2796,31 @@ function renderDNSTXTRecords(records) {
                     </div>
                 </div>
             `).join('')}
-            <div style="font-size: 12px; color: #64748b; margin-top: 8px;">
+            <div style="font-size: 12px; color: #64748b; margin-top: 8px; margin-bottom: 12px;">
                 添加完成后，DNS生效可能需要几分钟时间。您可以点击"验证DNS"按钮手动触发验证。
             </div>
+            <button type="button" class="btn btn-primary" onclick="verifyManualDNS('${certId}')">
+                验证DNS
+            </button>
         </div>
     `;
+}
+
+// 验证手动DNS记录
+async function verifyManualDNS(certId) {
+    try {
+        showToast('正在验证DNS记录...', 'info');
+        const data = await apiRequest(`/certificates/${certId}/verify-manual-dns`, {
+            method: 'POST'
+        });
+        if (data.success) {
+            showToast('DNS验证已触发，请等待验证完成', 'success');
+        } else {
+            showToast(data.error || '验证失败', 'error');
+        }
+    } catch (err) {
+        showToast('验证请求失败: ' + err.message, 'error');
+    }
 }
 
 // 停止轮询
@@ -3686,6 +3812,13 @@ async function loadSettings() {
             document.getElementById('maxAccessLogEntries').value = data.data.max_access_log_entries || 10000;
             document.getElementById('certificateConfigPath').value = data.data.certificate_config_path || '/usr/trim/etc/network_gateway_cert.conf';
             document.getElementById('certificateSyncIntervalSeconds').value = data.data.certificate_sync_interval_seconds || 3600;
+            // 加载 ACME 账户邮箱
+            document.getElementById('globalAccountEmail').value = data.data.acme_account_email || '';
+            // 加载云服务商密钥
+            document.getElementById('tencentCloudSecretId').value = data.data.tencent_cloud_secret_id || '';
+            document.getElementById('tencentCloudSecretKey').value = data.data.tencent_cloud_secret_key || '';
+            document.getElementById('aliyunAccessKeyId').value = data.data.aliyun_access_key_id || '';
+            document.getElementById('aliyunAccessKeySecret').value = data.data.aliyun_access_key_secret || '';
             const effectivePaths = data.data.effective_paths || {};
             document.getElementById('effectivePidPath').value = effectivePaths.pid_path || '';
             document.getElementById('effectiveSocketPath').value = effectivePaths.socket_path || '';
@@ -3724,6 +3857,69 @@ async function handleSaveSettings(e) {
         });
         if (data.success) {
             showToast('配置已保存', 'success');
+        } else {
+            showToast(data.error || '保存失败', 'error');
+        }
+    } catch (err) {
+        showToast('网络错误，请稍后重试', 'error');
+    }
+}
+
+// 保存云服务商密钥
+async function handleSaveCloudKeys(e) {
+    e.preventDefault();
+
+    const current = await apiRequest('/config');
+    if (!current.success || !current.data) {
+        showToast(current.error || '读取当前配置失败', 'error');
+        return;
+    }
+
+    const config = {
+        ...current.data,
+        tencent_cloud_secret_id: document.getElementById('tencentCloudSecretId').value.trim(),
+        tencent_cloud_secret_key: document.getElementById('tencentCloudSecretKey').value.trim(),
+        aliyun_access_key_id: document.getElementById('aliyunAccessKeyId').value.trim(),
+        aliyun_access_key_secret: document.getElementById('aliyunAccessKeySecret').value.trim()
+    };
+
+    try {
+        const data = await apiRequest('/config', {
+            method: 'PUT',
+            body: JSON.stringify(config)
+        });
+        if (data.success) {
+            showToast('密钥已保存', 'success');
+        } else {
+            showToast(data.error || '保存失败', 'error');
+        }
+    } catch (err) {
+        showToast('网络错误，请稍后重试', 'error');
+    }
+}
+
+// 保存 ACME 账户配置
+async function handleSaveACMEAccount(e) {
+    e.preventDefault();
+
+    const current = await apiRequest('/config');
+    if (!current.success || !current.data) {
+        showToast(current.error || '读取当前配置失败', 'error');
+        return;
+    }
+
+    const config = {
+        ...current.data,
+        acme_account_email: document.getElementById('globalAccountEmail').value.trim()
+    };
+
+    try {
+        const data = await apiRequest('/config', {
+            method: 'PUT',
+            body: JSON.stringify(config)
+        });
+        if (data.success) {
+            showToast('邮箱已保存', 'success');
         } else {
             showToast(data.error || '保存失败', 'error');
         }

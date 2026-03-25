@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -25,6 +28,7 @@ type certificateUpsertRequest struct {
 	AccountEmail    string                          `json:"account_email"`
 	AutoRenew       bool                            `json:"auto_renew"`
 	RenewBeforeDays int                             `json:"renew_before_days"`
+	CA              models.CertificateCA            `json:"ca"`
 	CertPEM         string                          `json:"cert_pem"`
 	KeyPEM          string                          `json:"key_pem"`
 }
@@ -35,10 +39,17 @@ func ListCertificatesHandler(w http.ResponseWriter, r *http.Request) {
 		return certs[i].UpdatedAt.After(certs[j].UpdatedAt)
 	})
 
-	response := make([]models.CertificateConfig, 0, len(certs))
+	response := make([]models.CertificateConfig, 0, len(certs)+1)
 	for _, cert := range certs {
-		response = append(response, maskCertificateSecrets(cert))
+		certWithDomains := enrichCertificateDomains(cert)
+		response = append(response, maskCertificateSecrets(certWithDomains))
 	}
+
+	// 追加内置 fallback 自签证书
+	if fallbackInfo := utils.GetCertificateManager().GetFallbackCertificateInfo(); fallbackInfo != nil {
+		response = append(response, *fallbackInfo)
+	}
+
 	WriteSuccess(w, response)
 }
 
@@ -75,6 +86,15 @@ func CreateCertificateHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		created, err = manager.ImportCertificate(certConfig, req.CertPEM, req.KeyPEM)
 	case models.CertificateSourceACME:
+		// 检查泛域名是否使用了文件校验
+		if req.ChallengeType == models.CertificateChallengeHTTP {
+			for _, domain := range req.Domains {
+				if strings.HasPrefix(domain, "*.") {
+					WriteError(w, http.StatusBadRequest, "泛域名证书必须使用DNS校验方式")
+					return
+				}
+			}
+		}
 		created, err = manager.IssueACMECertificate(certConfig)
 	default:
 		WriteError(w, http.StatusBadRequest, "Unsupported certificate source")
@@ -159,30 +179,80 @@ func GetCertificateIssueProgressHandler(w http.ResponseWriter, r *http.Request) 
 	WriteSuccess(w, progress)
 }
 
-func maskCertificateSecrets(cert models.CertificateConfig) models.CertificateConfig {
-	cert.DNSConfig.TencentSecretID = maskSecret(cert.DNSConfig.TencentSecretID)
-	cert.DNSConfig.TencentSecretKey = maskSecret(cert.DNSConfig.TencentSecretKey)
-	cert.DNSConfig.TencentSessionToken = maskSecret(cert.DNSConfig.TencentSessionToken)
-	cert.DNSConfig.AliAccessKey = maskSecret(cert.DNSConfig.AliAccessKey)
-	cert.DNSConfig.AliSecretKey = maskSecret(cert.DNSConfig.AliSecretKey)
-	cert.DNSConfig.AliSecurityToken = maskSecret(cert.DNSConfig.AliSecurityToken)
-	cert.DNSConfig.CloudflareAPIKey = maskSecret(cert.DNSConfig.CloudflareAPIKey)
-	cert.DNSConfig.CloudflareDNSAPIToken = maskSecret(cert.DNSConfig.CloudflareDNSAPIToken)
-	cert.DNSConfig.CloudflareZoneToken = maskSecret(cert.DNSConfig.CloudflareZoneToken)
+// VerifyManualDNSHandler 验证手动DNS记录
+func VerifyManualDNSHandler(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Path[len("/api/certificates/") : len(r.URL.Path)-len("/verify-manual-dns")]
+	
+	// 获取手动DNS验证信息
+	challenge := utils.GetCertificateManager().GetManualDNSChallenge(id)
+	if challenge == nil {
+		WriteError(w, http.StatusNotFound, "未找到手动DNS验证信息")
+		return
+	}
+	
+	// 触发DNS验证
+	if err := utils.GetCertificateManager().TriggerManualDNSVerification(id); err != nil {
+		WriteError(w, http.StatusInternalServerError, "触发DNS验证失败: "+err.Error())
+		return
+	}
+	
+	WriteSuccess(w, map[string]string{"message": "DNS验证已触发"})
+}
+
+// enrichCertificateDomains 从证书文件中读取域名信息（针对导入和外部同步的证书）
+func enrichCertificateDomains(cert models.CertificateConfig) models.CertificateConfig {
+	// 只有导入的证书或外部同步的证书才需要从文件读取域名
+	if cert.Source != models.CertificateSourceImported && cert.Source != models.CertificateSourceFileSync {
+		return cert
+	}
+
+	// 如果证书路径为空，无法读取
+	if cert.CertPath == "" {
+		return cert
+	}
+
+	// 尝试从证书文件读取域名
+	meta, err := utils.GetCertificateMetadata(cert.CertPath, cert.KeyPath)
+	if err != nil {
+		// 读取失败，保持原有域名信息
+		return cert
+	}
+
+	// 使用证书文件中的域名
+	if len(meta.Domains) > 0 {
+		cert.Domains = meta.Domains
+		// 使用第一个域名作为证书名称
+		cert.Name = meta.Domains[0]
+	}
+	if meta.Issuer != "" {
+		cert.Issuer = meta.Issuer
+	}
+	if meta.ExpiresAt != nil {
+		cert.ExpiresAt = meta.ExpiresAt
+	}
+
 	return cert
 }
 
-func maskSecret(value string) string {
-	if len(value) <= 4 {
-		if value == "" {
-			return ""
-		}
-		return "****"
-	}
-	return value[:2] + "****" + value[len(value)-2:]
+func maskCertificateSecrets(cert models.CertificateConfig) models.CertificateConfig {
+	cert.DNSConfig.TencentSecretID = MaskSecret(cert.DNSConfig.TencentSecretID)
+	cert.DNSConfig.TencentSecretKey = MaskSecret(cert.DNSConfig.TencentSecretKey)
+	cert.DNSConfig.TencentSessionToken = MaskSecret(cert.DNSConfig.TencentSessionToken)
+	cert.DNSConfig.AliAccessKey = MaskSecret(cert.DNSConfig.AliAccessKey)
+	cert.DNSConfig.AliSecretKey = MaskSecret(cert.DNSConfig.AliSecretKey)
+	cert.DNSConfig.AliSecurityToken = MaskSecret(cert.DNSConfig.AliSecurityToken)
+	cert.DNSConfig.CloudflareAPIKey = MaskSecret(cert.DNSConfig.CloudflareAPIKey)
+	cert.DNSConfig.CloudflareDNSAPIToken = MaskSecret(cert.DNSConfig.CloudflareDNSAPIToken)
+	cert.DNSConfig.CloudflareZoneToken = MaskSecret(cert.DNSConfig.CloudflareZoneToken)
+	return cert
 }
 
 func buildCertificateConfig(req certificateUpsertRequest) models.CertificateConfig {
+	// 默认使用 Let's Encrypt
+	ca := req.CA
+	if ca == "" {
+		ca = models.CertificateCALetsEncrypt
+	}
 	return models.CertificateConfig{
 		Name:            req.Name,
 		Domains:         req.Domains,
@@ -193,6 +263,7 @@ func buildCertificateConfig(req certificateUpsertRequest) models.CertificateConf
 		AccountEmail:    req.AccountEmail,
 		AutoRenew:       req.AutoRenew,
 		RenewBeforeDays: req.RenewBeforeDays,
+		CA:              ca,
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
 	}
@@ -292,4 +363,82 @@ func normalizeCertificateSource(source models.CertificateSource) models.Certific
 	default:
 		return source
 	}
+}
+
+// DownloadCertificateHandler 下载证书文件（ZIP格式）
+func DownloadCertificateHandler(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Path[len("/api/certificates/"):]
+	id = strings.TrimSuffix(id, "/download")
+	
+	cert := config.GetManager().GetCertificate(id)
+	if cert == nil {
+		WriteError(w, http.StatusNotFound, "Certificate not found")
+		return
+	}
+
+	// 创建ZIP文件
+	var buf bytes.Buffer
+	zipWriter := zip.NewWriter(&buf)
+
+	// 添加证书文件
+	certFileName := cert.ID + ".crt"
+	if data, err := os.ReadFile(cert.CertPath); err == nil {
+		w, _ := zipWriter.Create(certFileName)
+		w.Write(data)
+	}
+
+	// 添加私钥文件
+	keyFileName := cert.ID + ".key"
+	if data, err := os.ReadFile(cert.KeyPath); err == nil {
+		w, _ := zipWriter.Create(keyFileName)
+		w.Write(data)
+	}
+
+	// 添加CA证书（如果是ACME证书）
+	if cert.Source == models.CertificateSourceACME {
+		// 尝试读取issuer证书
+		issuerPath := strings.TrimSuffix(cert.CertPath, ".crt") + "-issuer.crt"
+		if data, err := os.ReadFile(issuerPath); err == nil {
+			w, _ := zipWriter.Create(cert.ID + "-ca.crt")
+			w.Write(data)
+		}
+	}
+
+	zipWriter.Close()
+
+	// 设置响应头
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.zip\"", cert.ID))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", buf.Len()))
+	w.Write(buf.Bytes())
+}
+
+// GenerateSelfSignedCertificateHandler 生成自签证书
+func GenerateSelfSignedCertificateHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Domains []string `json:"domains"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if len(req.Domains) == 0 {
+		WriteError(w, http.StatusBadRequest, "Domains are required")
+		return
+	}
+
+	manager := utils.GetCertificateManager()
+	cert, err := manager.GenerateSelfSignedCertificate(req.Domains)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 记录安全日志
+	security.GetAuditLogger().LogSystemOperate("system", r.RemoteAddr, "create", cert.ID, "生成自签证书", true, map[string]any{
+		"domains": req.Domains,
+	})
+
+	WriteSuccess(w, cert)
 }
