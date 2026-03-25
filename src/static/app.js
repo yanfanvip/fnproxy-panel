@@ -2119,17 +2119,9 @@ function getCertificateProviderFieldsHTML(provider, dnsConfig = {}) {
                         ${labelWithHint('Secret ID *', '腾讯云 API 访问密钥 ID')}
                         <input type="text" id="certTencentSecretId" class="form-control" value="${escapeHtml(dnsConfig.tencent_secret_id || '')}">
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" style="margin-bottom:0;">
                         ${labelWithHint('Secret Key *', '腾讯云 API 访问密钥 Secret')}
                         <input type="password" id="certTencentSecretKey" class="form-control" value="${escapeHtml(dnsConfig.tencent_secret_key || '')}">
-                    </div>
-                    <div class="form-group">
-                        ${labelWithHint('Session Token（可选）', '使用临时凭据时可填写 Session Token')}
-                        <input type="password" id="certTencentSessionToken" class="form-control" value="${escapeHtml(dnsConfig.tencent_session_token || '')}">
-                    </div>
-                    <div class="form-group" style="margin-bottom:0;">
-                        ${labelWithHint('Region（可选）', '腾讯云 API 调用区域，例如 ap-guangzhou')}
-                        <input type="text" id="certTencentRegion" class="form-control" value="${escapeHtml(dnsConfig.tencent_region || '')}" placeholder="ap-guangzhou">
                     </div>
                 </div>
             `;
@@ -2140,21 +2132,9 @@ function getCertificateProviderFieldsHTML(provider, dnsConfig = {}) {
                         ${labelWithHint('Access Key *', '阿里云账号的 AccessKey ID')}
                         <input type="text" id="certAliAccessKey" class="form-control" value="${escapeHtml(dnsConfig.ali_access_key || '')}">
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" style="margin-bottom:0;">
                         ${labelWithHint('Secret Key *', '阿里云账号的 AccessKey Secret')}
                         <input type="password" id="certAliSecretKey" class="form-control" value="${escapeHtml(dnsConfig.ali_secret_key || '')}">
-                    </div>
-                    <div class="form-group">
-                        ${labelWithHint('STS Token（可选）', '使用 STS 临时凭据时可填写')}
-                        <input type="password" id="certAliSecurityToken" class="form-control" value="${escapeHtml(dnsConfig.ali_security_token || '')}">
-                    </div>
-                    <div class="form-group">
-                        ${labelWithHint('Region ID（可选）', 'AliDNS 使用的区域 ID，通常默认即可')}
-                        <input type="text" id="certAliRegionId" class="form-control" value="${escapeHtml(dnsConfig.ali_region_id || '')}" placeholder="cn-hangzhou">
-                    </div>
-                    <div class="form-group" style="margin-bottom:0;">
-                        ${labelWithHint('RAM Role（可选）', '若使用 ECS 实例 RAM 角色，可填写角色名')}
-                        <input type="text" id="certAliRamRole" class="form-control" value="${escapeHtml(dnsConfig.ali_ram_role || '')}">
                     </div>
                 </div>
             `;
@@ -2176,6 +2156,21 @@ function getCertificateProviderFieldsHTML(provider, dnsConfig = {}) {
                     <div class="form-group" style="margin-bottom:0;">
                         ${labelWithHint('API Key（可选）', '仅在使用 Global API Key 模式时需要')}
                         <input type="password" id="certCloudflareApiKey" class="form-control" value="${escapeHtml(dnsConfig.cloudflare_api_key || '')}">
+                    </div>
+                </div>
+            `;
+        case 'manual':
+            return `
+                <div class="cert-provider-fields">
+                    <div class="form-group" style="margin-bottom:0;">
+                        <div style="background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 12px; font-size: 13px; color: #0369a1;">
+                            <div style="font-weight: 600; margin-bottom: 8px;">手动DNS验证说明</div>
+                            <div style="line-height: 1.6;">
+                                选择手动验证后，系统会生成需要添加的DNS TXT记录。<br>
+                                您需要手动在DNS管理后台添加这些记录，然后点击"验证DNS"按钮继续。<br>
+                                <span style="color: #dc2626;">注意：DNS记录生效可能需要几分钟时间。</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             `;
@@ -2264,6 +2259,7 @@ function showCertificateModal(mode = 'acme', certificate = null) {
                     <option value="tencentcloud" ${certificate?.dns_provider === 'tencentcloud' ? 'selected' : ''}>腾讯云</option>
                     <option value="alidns" ${certificate?.dns_provider === 'alidns' ? 'selected' : ''}>阿里云</option>
                     <option value="cloudflare" ${certificate?.dns_provider === 'cloudflare' ? 'selected' : ''}>Cloudflare</option>
+                    <option value="manual" ${certificate?.dns_provider === 'manual' ? 'selected' : ''}>手动验证（手动添加TXT记录）</option>
                 </select>
             </div>
             <div id="certDNSProviderFields" class="form-group hidden"></div>
@@ -2331,15 +2327,10 @@ function getCertificateRequestBody() {
                 case 'tencentcloud':
                     body.dns_config.tencent_secret_id = document.getElementById('certTencentSecretId')?.value.trim() || '';
                     body.dns_config.tencent_secret_key = document.getElementById('certTencentSecretKey')?.value || '';
-                    body.dns_config.tencent_session_token = document.getElementById('certTencentSessionToken')?.value || '';
-                    body.dns_config.tencent_region = document.getElementById('certTencentRegion')?.value.trim() || '';
                     break;
                 case 'alidns':
                     body.dns_config.ali_access_key = document.getElementById('certAliAccessKey')?.value.trim() || '';
                     body.dns_config.ali_secret_key = document.getElementById('certAliSecretKey')?.value || '';
-                    body.dns_config.ali_security_token = document.getElementById('certAliSecurityToken')?.value || '';
-                    body.dns_config.ali_region_id = document.getElementById('certAliRegionId')?.value.trim() || '';
-                    body.dns_config.ali_ram_role = document.getElementById('certAliRamRole')?.value.trim() || '';
                     break;
                 case 'cloudflare':
                     body.dns_config.cloudflare_dns_api_token = document.getElementById('certCloudflareDnsToken')?.value || '';
@@ -2394,21 +2385,55 @@ async function saveCertificate() {
             requestBody = JSON.stringify(body);
         }
 
+        // 对于ACME证书申请，先关闭当前modal，然后打开进度modal
+        if (!isEdit && body.source === 'acme') {
+            closeModal();
+            // 生成临时证书ID用于跟踪进度
+            const tempCertId = 'temp-' + Date.now();
+            showCertificateProgressModal(tempCertId, body.domains);
+        }
+
         const data = await apiRequest(isEdit ? `/certificates/${currentCertificateEditId}` : '/certificates', {
             method: isEdit ? 'PUT' : 'POST',
             body: requestBody
         });
         if (!data.success) {
-            showToast(data.error || '保存证书失败', 'error');
+            // 如果进度modal已打开，更新为错误状态
+            if (!isEdit && body.source === 'acme') {
+                const detail = document.getElementById('certProgressDetail');
+                if (detail) {
+                    detail.innerHTML = `<div style="color: #dc2626;">申请失败：${escapeHtml(data.error || '未知错误')}</div>`;
+                }
+                stopCertProgressPolling();
+            } else {
+                showToast(data.error || '保存证书失败', 'error');
+            }
             return;
         }
 
-        closeModal();
-        currentCertificateEditId = null;
-        showToast(isEdit ? '证书已更新' : (body.source === 'imported' ? '证书已导入' : '证书申请成功'), 'success');
-        loadCertificates();
+        // 如果是ACME申请，更新进度modal的证书ID
+        if (!isEdit && body.source === 'acme' && data.data && data.data.id) {
+            currentCertProgressId = data.data.id;
+            // 继续轮询新证书的进度
+            stopCertProgressPolling();
+            startCertProgressPolling(data.data.id);
+        } else {
+            closeModal();
+            currentCertificateEditId = null;
+            showToast(isEdit ? '证书已更新' : (body.source === 'imported' ? '证书已导入' : '证书申请成功'), 'success');
+            loadCertificates();
+        }
     } catch (err) {
-        showToast('网络错误，请稍后重试', 'error');
+        // 如果进度modal已打开，更新为错误状态
+        if (!isEdit && body.source === 'acme') {
+            const detail = document.getElementById('certProgressDetail');
+            if (detail) {
+                detail.innerHTML = `<div style="color: #dc2626;">网络错误：${escapeHtml(err.message || '请稍后重试')}</div>`;
+            }
+            stopCertProgressPolling();
+        } else {
+            showToast('网络错误，请稍后重试', 'error');
+        }
     }
 }
 
@@ -2464,6 +2489,227 @@ async function deleteCertificate(id) {
     } catch (err) {
         showToast('网络错误，请稍后重试', 'error');
     }
+}
+
+// 证书申请进度跟踪
+let certProgressInterval = null;
+let currentCertProgressId = null;
+
+// 证书申请步骤定义
+const CERT_PROGRESS_STEPS = [
+    { key: 'prepare', title: '准备申请', icon: '⏳' },
+    { key: 'challenge', title: '配置验证', icon: '⚙️' },
+    { key: 'verify', title: '等待验证', icon: '⏱️' },
+    { key: 'issue', title: '签发证书', icon: '📜' },
+    { key: 'complete', title: '完成', icon: '✅' }
+];
+
+// 显示证书申请进度Modal
+function showCertificateProgressModal(certId, domains) {
+    currentCertProgressId = certId;
+    setModalVariant('default');
+    document.getElementById('modalTitle').textContent = '证书申请进度';
+    document.getElementById('modalConfirm').textContent = '关闭';
+    document.getElementById('modalConfirm').onclick = closeCertificateProgressModal;
+    
+    const domainsHtml = domains.map(d => `<span class="badge">${escapeHtml(d)}</span>`).join(' ');
+    
+    const isTempId = certId.startsWith('temp-');
+    
+    document.getElementById('modalBody').innerHTML = `
+        <div style="margin-bottom: 16px;">
+            <div style="font-size: 12px; color: #64748b; margin-bottom: 8px;">申请域名</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px;">${domainsHtml}</div>
+        </div>
+        <div class="cert-progress-timeline" id="certProgressTimeline">
+            ${renderCertProgressSteps('prepare')}
+        </div>
+        <div id="certProgressDetail" style="margin-top: 16px; padding: 12px; background: #f8fafc; border-radius: 8px; font-size: 13px; color: #64748b;">
+            ${isTempId ? '正在提交申请，请稍候...' : '正在初始化...'}
+        </div>
+    `;
+    
+    document.getElementById('modal').classList.add('active');
+    
+    // 如果是真实ID，开始轮询进度；如果是临时ID，等待获取真实ID后再轮询
+    if (!isTempId) {
+        startCertProgressPolling(certId);
+    }
+}
+
+// 渲染进度步骤
+function renderCertProgressSteps(currentStep, stepStatus = {}) {
+    return CERT_PROGRESS_STEPS.map((step, index) => {
+        const status = stepStatus[step.key] || getStepStatus(step.key, currentStep);
+        const stepClass = status; // pending, running, completed, error
+        
+        let icon = step.icon;
+        if (status === 'completed') icon = '✓';
+        if (status === 'running') icon = '◐';
+        if (status === 'error') icon = '✗';
+        
+        return `
+            <div class="cert-progress-step ${stepClass}" data-step="${step.key}">
+                <div class="cert-progress-icon">${icon}</div>
+                <div class="cert-progress-content">
+                    <div class="cert-progress-title">${step.title}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 获取步骤状态
+function getStepStatus(stepKey, currentStep) {
+    const stepOrder = ['prepare', 'challenge', 'verify', 'issue', 'complete'];
+    const currentIndex = stepOrder.indexOf(currentStep);
+    const stepIndex = stepOrder.indexOf(stepKey);
+    
+    if (stepIndex < currentIndex) return 'completed';
+    if (stepIndex === currentIndex) return 'running';
+    return 'pending';
+}
+
+// 开始轮询证书进度
+function startCertProgressPolling(certId) {
+    // 清除之前的轮询
+    if (certProgressInterval) {
+        clearInterval(certProgressInterval);
+    }
+    
+    // 立即获取一次
+    fetchCertProgress(certId);
+    
+    // 每2秒轮询一次
+    certProgressInterval = setInterval(() => {
+        fetchCertProgress(certId);
+    }, 2000);
+}
+
+// 获取证书进度
+async function fetchCertProgress(certId) {
+    // 如果是临时ID，跳过轮询，等待真实ID
+    if (certId.startsWith('temp-')) {
+        return;
+    }
+    
+    try {
+        const data = await apiRequest(`/certificates/${certId}/progress`);
+        if (!data.success) {
+            // 如果404，可能是进度还没创建，继续轮询
+            if (data.error && data.error.includes('未找到')) {
+                return;
+            }
+            return;
+        }
+        
+        const progress = data.data;
+        updateCertProgressUI(progress);
+        
+        // 如果已完成或出错，停止轮询
+        if (progress.status === 'success' || progress.status === 'error') {
+            stopCertProgressPolling();
+            
+            // 更新确认按钮
+            document.getElementById('modalConfirm').textContent = '确定';
+            
+            // 刷新证书列表
+            loadCertificates();
+            
+            if (progress.status === 'success') {
+                showToast('证书申请成功', 'success');
+            } else {
+                showToast(progress.message || '证书申请失败', 'error');
+            }
+        }
+    } catch (err) {
+        console.error('获取证书进度失败:', err);
+    }
+}
+
+// 更新进度UI
+function updateCertProgressUI(progress) {
+    const timeline = document.getElementById('certProgressTimeline');
+    const detail = document.getElementById('certProgressDetail');
+    
+    if (!timeline || !detail) return;
+    
+    // 更新步骤状态
+    const stepStatus = {};
+    const stepOrder = ['prepare', 'challenge', 'verify', 'issue', 'complete'];
+    const currentIndex = stepOrder.indexOf(progress.step);
+    
+    stepOrder.forEach((key, index) => {
+        if (progress.status === 'error') {
+            if (index < currentIndex) stepStatus[key] = 'completed';
+            else if (index === currentIndex) stepStatus[key] = 'error';
+            else stepStatus[key] = 'pending';
+        } else if (progress.status === 'success') {
+            stepStatus[key] = 'completed';
+        } else {
+            if (index < currentIndex) stepStatus[key] = 'completed';
+            else if (index === currentIndex) stepStatus[key] = 'running';
+            else stepStatus[key] = 'pending';
+        }
+    });
+    
+    timeline.innerHTML = renderCertProgressSteps(progress.step, stepStatus);
+    
+    // 更新详情
+    let detailHtml = escapeHtml(progress.message || '');
+    if (progress.detail) {
+        detailHtml += `<div style="margin-top: 8px; color: #94a3b8; font-size: 12px;">${escapeHtml(progress.detail)}</div>`;
+    }
+    
+    // 显示TXT记录（如果有）
+    if (progress.txt_records && progress.txt_records.length > 0) {
+        detailHtml += renderDNSTXTRecords(progress.txt_records);
+    }
+    
+    detail.innerHTML = detailHtml;
+}
+
+// 渲染DNS TXT记录
+function renderDNSTXTRecords(records) {
+    return `
+        <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
+            <div style="font-weight: 600; margin-bottom: 12px; color: #334155;">请添加以下DNS TXT记录：</div>
+            ${records.map(r => `
+                <div class="dns-txt-record">
+                    <div class="dns-txt-record-row">
+                        <div class="dns-txt-label">主机记录</div>
+                        <div class="dns-txt-value">${escapeHtml(r.host)}</div>
+                    </div>
+                    <div class="dns-txt-record-row">
+                        <div class="dns-txt-label">记录类型</div>
+                        <div class="dns-txt-value">TXT</div>
+                    </div>
+                    <div class="dns-txt-record-row">
+                        <div class="dns-txt-label">记录值</div>
+                        <div class="dns-txt-value">${escapeHtml(r.value)}</div>
+                    </div>
+                </div>
+            `).join('')}
+            <div style="font-size: 12px; color: #64748b; margin-top: 8px;">
+                添加完成后，DNS生效可能需要几分钟时间。您可以点击"验证DNS"按钮手动触发验证。
+            </div>
+        </div>
+    `;
+}
+
+// 停止轮询
+function stopCertProgressPolling() {
+    if (certProgressInterval) {
+        clearInterval(certProgressInterval);
+        certProgressInterval = null;
+    }
+}
+
+// 关闭证书进度Modal
+function closeCertificateProgressModal() {
+    stopCertProgressPolling();
+    currentCertProgressId = null;
+    closeModal();
 }
 
 // 加载SSH连接列表

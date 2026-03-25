@@ -293,6 +293,14 @@ func main() {
 			}
 			return
 		}
+		if strings.HasSuffix(path, "/progress") {
+			if r.Method == http.MethodGet {
+				handlers.GetCertificateIssueProgressHandler(w, r)
+			} else {
+				handlers.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			}
+			return
+		}
 
 		switch r.Method {
 		case http.MethodGet:

@@ -29,6 +29,7 @@ import (
 
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge"
+	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/providers/dns/alidns"
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
@@ -125,11 +126,21 @@ func (p *memoryHTTP01Provider) Get(token string) (string, bool) {
 
 // CertificateManager 管理证书申请、导入、续签和运行时加载。
 type CertificateManager struct {
-	mu            sync.RWMutex
-	loaded        map[string]*loadedCertificate
-	fallback      *tls.Certificate
-	httpChallenge *memoryHTTP01Provider
-	startOnce     sync.Once
+	mu              sync.RWMutex
+	loaded          map[string]*loadedCertificate
+	fallback        *tls.Certificate
+	httpChallenge   *memoryHTTP01Provider
+	startOnce       sync.Once
+	issueProgress   map[string]*models.CertificateIssueProgress // 证书申请进度跟踪
+	manualDNSStore  map[string]*manualDNSChallenge               // 手动DNS验证存储
+}
+
+// manualDNSChallenge 手动DNS验证信息
+type manualDNSChallenge struct {
+	domain   string
+	token    string
+	keyAuth  string
+	createdAt time.Time
 }
 
 var (
@@ -143,11 +154,61 @@ func GetCertificateManager() *CertificateManager {
 		certificateManagerInstance = &CertificateManager{
 			loaded:        make(map[string]*loadedCertificate),
 			httpChallenge: newMemoryHTTP01Provider(),
+			issueProgress: make(map[string]*models.CertificateIssueProgress),
+			manualDNSStore: make(map[string]*manualDNSChallenge),
 		}
 		certificateManagerInstance.ensureFallbackCertificate()
 		certificateManagerInstance.Reload()
+		// 启动清理过期手动DNS验证的定时任务
+		go certificateManagerInstance.cleanupExpiredManualDNS()
 	})
 	return certificateManagerInstance
+}
+
+// cleanupExpiredManualDNS 清理过期的手动DNS验证记录
+func (m *CertificateManager) cleanupExpiredManualDNS() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		m.mu.Lock()
+		now := time.Now()
+		for id, challenge := range m.manualDNSStore {
+			if now.Sub(challenge.createdAt) > 30*time.Minute {
+				delete(m.manualDNSStore, id)
+			}
+		}
+		m.mu.Unlock()
+	}
+}
+
+// GetIssueProgress 获取证书申请进度
+func (m *CertificateManager) GetIssueProgress(certID string) *models.CertificateIssueProgress {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if progress, ok := m.issueProgress[certID]; ok {
+		// 返回副本
+		copy := *progress
+		return &copy
+	}
+	return nil
+}
+
+// updateIssueProgress 更新证书申请进度（内部方法）
+func (m *CertificateManager) updateIssueProgress(certID string, step models.CertificateIssueStep, status, message, detail string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	now := time.Now()
+	if progress, ok := m.issueProgress[certID]; ok {
+		progress.Step = step
+		progress.Status = status
+		progress.Message = message
+		progress.Detail = detail
+		progress.UpdatedAt = now
+		if status == "success" || status == "error" {
+			progress.CompletedAt = &now
+		}
+	}
 }
 
 // StartAutoRenew 启动自动续签任务。
@@ -468,6 +529,28 @@ func (m *CertificateManager) IssueACMECertificate(cert models.CertificateConfig)
 	cert.KeyPath = filepath.Join(managedCertificateDir(), cert.ID+".key")
 	cert.AccountKeyPath = filepath.Join(accountCertificateDir(), cert.ID+".account.key")
 
+	// 初始化进度跟踪
+	now := time.Now()
+	m.mu.Lock()
+	m.issueProgress[cert.ID] = &models.CertificateIssueProgress{
+		CertID:    cert.ID,
+		Step:      models.CertificateStepPrepare,
+		Status:    "running",
+		Message:   "准备申请证书",
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	m.mu.Unlock()
+
+	// 异步执行证书申请，让前端可以立即获取证书ID并开始轮询进度
+	go m.issueACMEAsync(cert)
+
+	// 立即返回证书配置（此时证书还在申请中）
+	return &cert, nil
+}
+
+// issueACMEAsync 异步执行ACME证书申请
+func (m *CertificateManager) issueACMEAsync(cert models.CertificateConfig) {
 	resource, reg, err := m.obtainACMEResource(cert)
 	if err != nil {
 		now := time.Now()
@@ -477,19 +560,24 @@ func (m *CertificateManager) IssueACMECertificate(cert models.CertificateConfig)
 		if config.GetManager().GetCertificate(cert.ID) != nil {
 			_ = config.GetManager().UpdateCertificate(cert)
 		}
-		return nil, err
+		// 更新进度为错误状态
+		m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "证书申请失败", err.Error())
+		return
 	}
 
 	loadedCert, metadata, err := parseCertificatePEM(resource.Certificate, resource.PrivateKey)
 	if err != nil {
-		return nil, err
+		m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "解析证书失败", err.Error())
+		return
 	}
 
 	if err := writeFileEnsuringDir(cert.CertPath, resource.Certificate, 0600); err != nil {
-		return nil, err
+		m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "保存证书文件失败", err.Error())
+		return
 	}
 	if err := writeFileEnsuringDir(cert.KeyPath, resource.PrivateKey, 0600); err != nil {
-		return nil, err
+		m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "保存私钥文件失败", err.Error())
+		return
 	}
 
 	now := time.Now()
@@ -513,11 +601,13 @@ func (m *CertificateManager) IssueACMECertificate(cert models.CertificateConfig)
 
 	if config.GetManager().GetCertificate(cert.ID) == nil {
 		if err := config.GetManager().AddCertificate(cert); err != nil {
-			return nil, err
+			m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "保存证书配置失败", err.Error())
+			return
 		}
 	} else {
 		if err := config.GetManager().UpdateCertificate(cert); err != nil {
-			return nil, err
+			m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "更新证书配置失败", err.Error())
+			return
 		}
 	}
 
@@ -529,7 +619,8 @@ func (m *CertificateManager) IssueACMECertificate(cert models.CertificateConfig)
 	}
 	m.mu.Unlock()
 
-	return &cert, nil
+	// 更新进度为完成状态
+	m.updateIssueProgress(cert.ID, models.CertificateStepComplete, "success", "证书申请成功", "")
 }
 
 // RenewCertificate 手动或自动续签 ACME 证书。
@@ -795,8 +886,13 @@ func (m *CertificateManager) cleanupRemovedFileSyncCertificates(configPath strin
 }
 
 func (m *CertificateManager) obtainACMEResource(cert models.CertificateConfig) (*certificate.Resource, *registration.Resource, error) {
+	// 更新进度：准备阶段
+	m.updateIssueProgress(cert.ID, models.CertificateStepPrepare, "running", "准备ACME账户", "")
+	fmt.Printf("[证书申请 %s] 开始准备ACME账户\n", cert.ID)
+
 	accountKey, err := loadOrCreateAccountKey(cert.AccountKeyPath)
 	if err != nil {
+		m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "加载ACME账户密钥失败", err.Error())
 		return nil, nil, err
 	}
 
@@ -811,30 +907,78 @@ func (m *CertificateManager) obtainACMEResource(cert models.CertificateConfig) (
 	legoConfig := lego.NewConfig(user)
 	client, err := lego.NewClient(legoConfig)
 	if err != nil {
+		m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "创建ACME客户端失败", err.Error())
 		return nil, nil, err
 	}
 
+	// 更新进度：配置验证
+	m.updateIssueProgress(cert.ID, models.CertificateStepChallenge, "running", "配置验证方式", string(cert.ChallengeType))
+	fmt.Printf("[证书申请 %s] 配置验证方式: %s\n", cert.ID, cert.ChallengeType)
+
 	if err := m.configureChallengeProvider(client, cert); err != nil {
+		m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "配置验证方式失败", err.Error())
 		return nil, nil, err
 	}
+	fmt.Printf("[证书申请 %s] 验证方式配置完成\n", cert.ID)
+
+	// 更新进度：等待验证
+	m.updateIssueProgress(cert.ID, models.CertificateStepVerify, "running", "等待域名验证", "请确保验证配置已生效")
+	fmt.Printf("[证书申请 %s] 开始注册ACME账户\n", cert.ID)
 
 	reg := user.registration
 	if reg == nil {
 		reg, err = client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
 		if err != nil {
+			m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "注册ACME账户失败", err.Error())
 			return nil, nil, err
 		}
 		user.registration = reg
+		fmt.Printf("[证书申请 %s] ACME账户注册完成\n", cert.ID)
 	}
+
+	// 更新进度：签发证书
+	m.updateIssueProgress(cert.ID, models.CertificateStepIssue, "running", "正在签发证书", fmt.Sprintf("域名: %v", cert.Domains))
+	fmt.Printf("[证书申请 %s] 开始签发证书，域名: %v\n", cert.ID, cert.Domains)
+	fmt.Printf("[证书申请 %s] 即将调用lego Obtain，这可能需要几分钟...\n", cert.ID)
 
 	resource, err := client.Certificate.Obtain(certificate.ObtainRequest{
 		Domains: cert.Domains,
 		Bundle:  true,
 	})
 	if err != nil {
+		fmt.Printf("[证书申请 %s] Obtain失败: %v\n", cert.ID, err)
+		m.updateIssueProgress(cert.ID, models.CertificateStepError, "error", "签发证书失败", err.Error())
 		return nil, nil, err
 	}
+	fmt.Printf("[证书申请 %s] 证书签发完成\n", cert.ID)
+
+	// 更新进度：完成
+	m.updateIssueProgress(cert.ID, models.CertificateStepComplete, "success", "证书申请成功", "")
 	return resource, reg, nil
+}
+
+// 国内DNS服务器列表，用于替代Google DNS
+var chinaNameservers = []string{
+	"223.5.5.5:53",       // 阿里DNS
+	"223.6.6.6:53",       // 阿里DNS备用
+	"119.29.29.29:53",    // 腾讯DNS
+	"114.114.114.114:53", // 114DNS
+}
+
+func init() {
+	// 在程序启动时设置国内DNS服务器和超时，避免Google DNS超时
+	// 这会影响所有lego库的DNS查询，包括FindZoneByFqdn
+	dns01.ClearFqdnCache()
+	// 设置DNS超时为30秒
+	if err := dns01.AddDNSTimeout(30 * time.Second)(nil); err != nil {
+		fmt.Printf("[DNS配置] 设置DNS超时失败: %v\n", err)
+	}
+	// 设置国内DNS服务器
+	if err := dns01.AddRecursiveNameservers(chinaNameservers)(nil); err != nil {
+		fmt.Printf("[DNS配置] 设置DNS服务器失败: %v\n", err)
+	} else {
+		fmt.Printf("[DNS配置] 已设置国内DNS服务器: %v，超时: 30秒\n", chinaNameservers)
+	}
 }
 
 func (m *CertificateManager) configureChallengeProvider(client *lego.Client, cert models.CertificateConfig) error {
@@ -846,7 +990,18 @@ func (m *CertificateManager) configureChallengeProvider(client *lego.Client, cer
 		if err != nil {
 			return err
 		}
-		return client.Challenge.SetDNS01Provider(provider)
+		fmt.Printf("[证书申请 %s] DNS provider创建成功: %s\n", cert.ID, cert.DNSProvider)
+		// 使用国内DNS服务器，避免Google DNS超时
+		// 同时禁用预检查，避免在Present之前进行DNS查询超时
+		// 设置传播等待时间为60秒，跳过DNS传播检查（由provider自己处理）
+		// 清除FQDN缓存，确保使用新的DNS服务器
+		dns01.ClearFqdnCache()
+		return client.Challenge.SetDNS01Provider(provider, 
+			dns01.AddRecursiveNameservers(chinaNameservers),
+			dns01.AddDNSTimeout(30*time.Second),
+			dns01.DisableAuthoritativeNssPropagationRequirement(),
+			dns01.PropagationWait(60*time.Second, true),
+		)
 	default:
 		return errors.New("不支持的证书校验方式")
 	}
@@ -859,15 +1014,31 @@ func newDNSProvider(cert models.CertificateConfig) (challenge.Provider, error) {
 		cfg.SecretID = strings.TrimSpace(cert.DNSConfig.TencentSecretID)
 		cfg.SecretKey = strings.TrimSpace(cert.DNSConfig.TencentSecretKey)
 		cfg.SessionToken = strings.TrimSpace(cert.DNSConfig.TencentSessionToken)
-		cfg.Region = strings.TrimSpace(cert.DNSConfig.TencentRegion)
-		return tencentcloud.NewDNSProviderConfig(cfg)
+		// DNSPod API 不需要 Region，设置为空
+		cfg.Region = ""
+		// 设置HTTP超时为60秒，避免API调用卡住
+		cfg.HTTPTimeout = 60 * time.Second
+		// 设置传播超时为120秒
+		cfg.PropagationTimeout = 120 * time.Second
+		// 添加调试日志
+		fmt.Printf("[腾讯云DNS] 配置信息: SecretID=%s, Region=%s, HTTPTimeout=%s, PropagationTimeout=%s\n", 
+			maskSecret(cfg.SecretID), cfg.Region, cfg.HTTPTimeout, cfg.PropagationTimeout)
+		provider, err := tencentcloud.NewDNSProviderConfig(cfg)
+		if err != nil {
+			fmt.Printf("[腾讯云DNS] 创建provider失败: %v\n", err)
+			return nil, fmt.Errorf("腾讯云DNS配置错误: %w", err)
+		}
+		fmt.Printf("[腾讯云DNS] Provider创建成功\n")
+		return provider, nil
 	case models.CertificateDNSAliDNS:
 		cfg := alidns.NewDefaultConfig()
 		cfg.APIKey = strings.TrimSpace(cert.DNSConfig.AliAccessKey)
 		cfg.SecretKey = strings.TrimSpace(cert.DNSConfig.AliSecretKey)
-		cfg.SecurityToken = strings.TrimSpace(cert.DNSConfig.AliSecurityToken)
-		cfg.RegionID = strings.TrimSpace(cert.DNSConfig.AliRegionID)
-		cfg.RAMRole = strings.TrimSpace(cert.DNSConfig.AliRAMRole)
+		// 设置HTTP超时为60秒
+		cfg.HTTPTimeout = 60 * time.Second
+		// 设置传播超时为120秒
+		cfg.PropagationTimeout = 120 * time.Second
+		fmt.Printf("[阿里云DNS] 配置信息: AccessKey=%s\n", maskSecret(cfg.APIKey))
 		return alidns.NewDNSProviderConfig(cfg)
 	case models.CertificateDNSCloudflare:
 		cfg := cloudflare.NewDefaultConfig()
@@ -876,9 +1047,61 @@ func newDNSProvider(cert models.CertificateConfig) (challenge.Provider, error) {
 		cfg.AuthToken = strings.TrimSpace(cert.DNSConfig.CloudflareDNSAPIToken)
 		cfg.ZoneToken = strings.TrimSpace(cert.DNSConfig.CloudflareZoneToken)
 		return cloudflare.NewDNSProviderConfig(cfg)
+	case models.CertificateDNSManual:
+		// 手动DNS验证，返回一个特殊的provider，会暂停等待用户手动添加记录
+		return &manualDNSProvider{certID: cert.ID}, nil
 	default:
 		return nil, errors.New("当前 DNS 服务商暂不支持")
 	}
+}
+
+// manualDNSProvider 手动DNS验证provider
+type manualDNSProvider struct {
+	certID string
+}
+
+func (p *manualDNSProvider) Present(domain, token, keyAuth string) error {
+	// 存储挑战信息，等待用户手动添加DNS记录
+	manager := GetCertificateManager()
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	
+	manager.manualDNSStore[p.certID] = &manualDNSChallenge{
+		domain:    domain,
+		token:     token,
+		keyAuth:   keyAuth,
+		createdAt: time.Now(),
+	}
+	
+	// 构建TXT记录信息
+	fqdn := "_acme-challenge." + domain
+	if progress, ok := manager.issueProgress[p.certID]; ok {
+		progress.Step = models.CertificateStepVerify
+		progress.Status = "running"
+		progress.Message = "等待手动添加DNS TXT记录"
+		progress.Detail = fmt.Sprintf("请在 %s 域名下添加 TXT 记录", domain)
+		progress.TXTRecords = []models.DNSTXTRecord{
+			{
+				Domain: domain,
+				Host:   "_acme-challenge",
+				Value:  keyAuth,
+			},
+		}
+		progress.UpdatedAt = time.Now()
+	}
+	
+	fmt.Printf("[手动DNS验证 %s] 需要添加TXT记录: %s = %s\n", p.certID, fqdn, keyAuth)
+	
+	return nil
+}
+
+func (p *manualDNSProvider) CleanUp(domain, token, keyAuth string) error {
+	// 清理存储的挑战信息
+	manager := GetCertificateManager()
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	delete(manager.manualDNSStore, p.certID)
+	return nil
 }
 
 func loadOrCreateAccountKey(path string) (crypto.PrivateKey, error) {
@@ -1284,4 +1507,15 @@ func (m *CertificateManager) ensureFallbackCertificate() {
 
 func randomID() string {
 	return fmt.Sprintf("cert-%d", time.Now().UnixNano())
+}
+
+// maskSecret 脱敏显示密钥
+func maskSecret(value string) string {
+	if len(value) <= 4 {
+		if value == "" {
+			return ""
+		}
+		return "****"
+	}
+	return value[:2] + "****" + value[len(value)-2:]
 }

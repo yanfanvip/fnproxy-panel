@@ -219,18 +219,53 @@ const (
 	CertificateDNSTencentCloud CertificateDNSProvider = "tencentcloud"
 	CertificateDNSAliDNS       CertificateDNSProvider = "alidns"
 	CertificateDNSCloudflare   CertificateDNSProvider = "cloudflare"
+	CertificateDNSManual       CertificateDNSProvider = "manual"
 )
 
 // CertificateStatus 证书状态
 type CertificateStatus string
 
 const (
-	CertificateStatusPending CertificateStatus = "pending"
-	CertificateStatusValid   CertificateStatus = "valid"
-	CertificateStatusRenew   CertificateStatus = "renewing"
-	CertificateStatusError   CertificateStatus = "error"
-	CertificateStatusExpired CertificateStatus = "expired"
+	CertificateStatusPending   CertificateStatus = "pending"
+	CertificateStatusValid     CertificateStatus = "valid"
+	CertificateStatusRenew     CertificateStatus = "renewing"
+	CertificateStatusError     CertificateStatus = "error"
+	CertificateStatusExpired   CertificateStatus = "expired"
+	CertificateStatusIssuing   CertificateStatus = "issuing"   // 正在申请中
+	CertificateStatusVerifying CertificateStatus = "verifying" // 等待验证
 )
+
+// CertificateIssueStep 证书申请步骤
+type CertificateIssueStep string
+
+const (
+	CertificateStepPrepare    CertificateIssueStep = "prepare"    // 准备申请
+	CertificateStepChallenge  CertificateIssueStep = "challenge"  // 配置验证
+	CertificateStepVerify     CertificateIssueStep = "verify"     // 等待验证
+	CertificateStepIssue      CertificateIssueStep = "issue"      // 签发证书
+	CertificateStepComplete   CertificateIssueStep = "complete"   // 完成
+	CertificateStepError      CertificateIssueStep = "error"      // 出错
+)
+
+// DNSTXTRecord DNS TXT记录信息
+type DNSTXTRecord struct {
+	Domain string `json:"domain"`
+	Host   string `json:"host"`
+	Value  string `json:"value"`
+}
+
+// CertificateIssueProgress 证书申请进度
+type CertificateIssueProgress struct {
+	CertID      string               `json:"cert_id"`
+	Step        CertificateIssueStep `json:"step"`
+	Status      string               `json:"status"` // running, success, error
+	Message     string               `json:"message"`
+	Detail      string               `json:"detail,omitempty"`
+	TXTRecords  []DNSTXTRecord       `json:"txt_records,omitempty"`
+	StartedAt   time.Time            `json:"started_at"`
+	UpdatedAt   time.Time            `json:"updated_at"`
+	CompletedAt *time.Time           `json:"completed_at,omitempty"`
+}
 
 // CertificateDNSConfig DNS 验证配置
 type CertificateDNSConfig struct {

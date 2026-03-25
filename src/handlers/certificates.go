@@ -148,6 +148,17 @@ func RenewCertificateHandler(w http.ResponseWriter, r *http.Request) {
 	WriteSuccess(w, maskCertificateSecrets(*updated))
 }
 
+// GetCertificateIssueProgressHandler 获取证书申请进度
+func GetCertificateIssueProgressHandler(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Path[len("/api/certificates/") : len(r.URL.Path)-len("/progress")]
+	progress := utils.GetCertificateManager().GetIssueProgress(id)
+	if progress == nil {
+		WriteError(w, http.StatusNotFound, "未找到证书申请进度")
+		return
+	}
+	WriteSuccess(w, progress)
+}
+
 func maskCertificateSecrets(cert models.CertificateConfig) models.CertificateConfig {
 	cert.DNSConfig.TencentSecretID = maskSecret(cert.DNSConfig.TencentSecretID)
 	cert.DNSConfig.TencentSecretKey = maskSecret(cert.DNSConfig.TencentSecretKey)
