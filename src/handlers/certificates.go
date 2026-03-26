@@ -369,7 +369,31 @@ func normalizeCertificateSource(source models.CertificateSource) models.Certific
 func DownloadCertificateHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/api/certificates/"):]
 	id = strings.TrimSuffix(id, "/download")
-	
+
+	// 处理内置 fallback 证书下载
+	if id == "__fallback__" {
+		// 创建ZIP文件
+		var buf bytes.Buffer
+		zipWriter := zip.NewWriter(&buf)
+
+		// 添加内置证书
+		w1, _ := zipWriter.Create("fallback.crt")
+		w1.Write([]byte(utils.EmbeddedFallbackCertPEM()))
+
+		// 添加内置私钥
+		w2, _ := zipWriter.Create("fallback.key")
+		w2.Write([]byte(utils.EmbeddedFallbackKeyPEM()))
+
+		zipWriter.Close()
+
+		// 设置响应头
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.zip\"", "fallback"))
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", buf.Len()))
+		w.Write(buf.Bytes())
+		return
+	}
+
 	cert := config.GetManager().GetCertificate(id)
 	if cert == nil {
 		WriteError(w, http.StatusNotFound, "Certificate not found")

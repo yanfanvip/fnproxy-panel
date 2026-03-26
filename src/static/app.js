@@ -2036,6 +2036,11 @@ async function loadCertificates() {
 
         tbody.innerHTML = certs.map(cert => {
             const isFallback = cert.id === '__fallback__';
+            const isFileSync = cert.source === 'file_sync';
+            const isImported = cert.source === 'imported';
+            const canEdit = !isFallback && !isFileSync && !isImported;
+            const canRenew = cert.source === 'acme' && !isFallback;
+            const canDelete = !isFallback && !isFileSync;
             return `
             <tr>
                 <td class="service-name-cell">${renderCertificateDomains(cert.domains || [])}</td>
@@ -2049,10 +2054,10 @@ async function loadCertificates() {
                     ${cert.last_error ? `<div class="cert-error-text">${escapeHtml(cert.last_error)}</div>` : ''}
                 </td>
                 <td class="service-actions-cell">
-                    <button class="btn icon-btn" title="下载证书" onclick="downloadCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>📥</button>
-                    <button class="btn icon-btn" title="${cert.source === 'file_sync' ? '配置文件同步证书请修改外部配置文件' : '编辑证书'}" onclick="editCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>✏️</button>
-                    <button class="btn ${cert.source === 'acme' ? 'btn-primary' : ''} icon-btn" title="立即续签" ${(cert.source !== 'acme' || isFallback) ? 'disabled' : ''} onclick="renewCertificate('${cert.id}')">↻</button>
-                    <button class="btn btn-danger icon-btn" title="删除证书" onclick="deleteCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>🗑</button>
+                    <button class="btn icon-btn" title="下载证书" onclick="downloadCertificate('${cert.id}')">📥</button>
+                    ${canEdit ? `<button class="btn icon-btn" title="编辑证书" onclick="editCertificate('${cert.id}')">✏️</button>` : ''}
+                    ${canRenew ? `<button class="btn btn-primary icon-btn" title="立即续签" onclick="renewCertificate('${cert.id}')">↻</button>` : ''}
+                    ${canDelete ? `<button class="btn btn-danger icon-btn" title="删除证书" onclick="deleteCertificate('${cert.id}')">🗑</button>` : ''}
                 </td>
             </tr>
         `;
@@ -2061,6 +2066,11 @@ async function loadCertificates() {
         if (mobileList) {
             mobileList.innerHTML = certs.map(cert => {
                 const isFallback = cert.id === '__fallback__';
+                const isFileSync = cert.source === 'file_sync';
+                const isImported = cert.source === 'imported';
+                const canEdit = !isFallback && !isFileSync && !isImported;
+                const canRenew = cert.source === 'acme' && !isFallback;
+                const canDelete = !isFallback && !isFileSync;
                 const source = escapeHtml(isFallback ? '内置自签' : formatCertificateSource(cert.source));
                 const challenge = escapeHtml(formatCertificateChallenge(cert.challenge_type));
                 const dnsProvider = escapeHtml(formatDNSProvider(cert.dns_provider));
@@ -2095,10 +2105,10 @@ async function loadCertificates() {
                     </div>
                     ${lastError}
                     <div class="certificate-mobile-card-actions">
-                        <button class="btn icon-btn" title="下载证书" onclick="downloadCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>📥</button>
-                        <button class="btn icon-btn" title="${cert.source === 'file_sync' ? '配置文件同步证书请修改外部配置文件' : '编辑证书'}" onclick="editCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>✏️</button>
-                        <button class="btn ${cert.source === 'acme' ? 'btn-primary' : ''} icon-btn" title="立即续签" ${(cert.source !== 'acme' || isFallback) ? 'disabled' : ''} onclick="renewCertificate('${cert.id}')">↻</button>
-                        <button class="btn btn-danger icon-btn" title="删除证书" onclick="deleteCertificate('${cert.id}')" ${isFallback ? 'disabled' : ''}>🗑</button>
+                        <button class="btn icon-btn" title="下载证书" onclick="downloadCertificate('${cert.id}')">📥</button>
+                        ${canEdit ? `<button class="btn icon-btn" title="编辑证书" onclick="editCertificate('${cert.id}')">✏️</button>` : ''}
+                        ${canRenew ? `<button class="btn btn-primary icon-btn" title="立即续签" onclick="renewCertificate('${cert.id}')">↻</button>` : ''}
+                        ${canDelete ? `<button class="btn btn-danger icon-btn" title="删除证书" onclick="deleteCertificate('${cert.id}')">🗑</button>` : ''}
                     </div>
                 </div>
                 `;
@@ -2164,23 +2174,21 @@ async function getCertificateProviderFieldsHTML(provider, dnsConfig = {}) {
                 </div>
             `;
         case 'cloudflare':
+            const hasCloudflareConfig = globalConfig.cloudflare_api_token;
+            if(hasCloudflareConfig){ return null }
             return `
                 <div class="cert-provider-fields">
-                    <div class="form-group">
-                        ${labelWithHint('DNS API Token *', '推荐使用具有 DNS:Edit 权限的 Cloudflare Token')}
-                        <input type="password" id="certCloudflareDnsToken" class="form-control" value="${escapeHtml(dnsConfig.cloudflare_dns_api_token || '')}">
-                    </div>
-                    <div class="form-group">
-                        ${labelWithHint('Zone Token（可选）', '如果采用拆分权限模式，可单独填写 Zone:Read Token')}
-                        <input type="password" id="certCloudflareZoneToken" class="form-control" value="${escapeHtml(dnsConfig.cloudflare_zone_token || '')}">
-                    </div>
-                    <div class="form-group">
-                        ${labelWithHint('Email（可选）', '仅在使用 Global API Key 模式时需要')}
-                        <input type="email" id="certCloudflareEmail" class="form-control" value="${escapeHtml(dnsConfig.cloudflare_email || '')}">
-                    </div>
                     <div class="form-group" style="margin-bottom:0;">
-                        ${labelWithHint('API Key（可选）', '仅在使用 Global API Key 模式时需要')}
-                        <input type="password" id="certCloudflareApiKey" class="form-control" value="${escapeHtml(dnsConfig.cloudflare_api_key || '')}">
+                        <div style="background: ${hasCloudflareConfig ? '#f0fdf4' : '#f0f9ff'}; border: 1px solid ${hasCloudflareConfig ? '#86efac' : '#bae6fd'}; border-radius: 8px; padding: 12px; font-size: 13px; color: ${hasCloudflareConfig ? '#166534' : '#0369a1'};">
+                            <div style="font-weight: 600; margin-bottom: 8px;">
+                                ${hasCloudflareConfig ? '✓ Cloudflare Token 已配置' : 'Cloudflare DNS 验证'}
+                            </div>
+                            <div style="line-height: 1.6;">
+                                ${hasCloudflareConfig
+                                    ? '系统将使用设置页面配置的 Cloudflare API Token 进行 DNS 验证。'
+                                    : '系统将自动使用在<a href="#" onclick="showPage(\'settings\')" style="color: #0284c7; text-decoration: underline;">设置页面</a>配置的 Cloudflare API Token。<br>如果尚未配置，请先前往设置页面添加 Token。'}
+                            </div>
+                        </div>
                     </div>
                 </div>
             `;
@@ -2256,10 +2264,6 @@ async function toggleCertificateProviderFields() {
     if (!fields) return;
     const provider = document.getElementById('certDNSProvider')?.value || '';
     fields.innerHTML = await getCertificateProviderFieldsHTML(provider);
-    
-    // 自动填充系统配置的密钥
-    autoFillCloudCredentials(provider);
-    
     scheduleModalHeightUpdate();
 }
 
@@ -2274,12 +2278,6 @@ async function getGlobalACMEEmail() {
         console.error('Failed to get global ACME email:', err);
     }
     return '';
-}
-
-// 自动填充云服务商密钥（仅用于 Cloudflare）
-async function autoFillCloudCredentials(provider) {
-    // 腾讯云和阿里云密钥从全局配置读取，不需要在表单中填充
-    // Cloudflare 需要用户每次输入，也可以考虑从全局配置读取
 }
 
 async function showCertificateModal(mode = 'acme', certificate = null) {
@@ -2368,7 +2366,18 @@ async function getCertificateRequestBody() {
     const dnsProvider = document.getElementById('certDNSProvider')?.value || '';
     const ca = document.getElementById('certCA')?.value || 'letsencrypt';
     const domain = (document.getElementById('certDomain').value || '').trim();
-    const domains = domain ? [domain] : [];
+    // 构建域名列表：如果是泛域名，自动添加根域名
+    let domains = [];
+    if (domain) {
+        domains = [domain];
+        // 如果是泛域名（如 *.example.com），自动添加根域名（example.com）
+        if (domain.startsWith('*.')) {
+            const rootDomain = domain.substring(2); // 去掉 *. 前缀
+            if (rootDomain && !domains.includes(rootDomain)) {
+                domains.push(rootDomain);
+            }
+        }
+    }
 
     const body = {
         source,
@@ -2434,6 +2443,12 @@ async function saveCertificate() {
             case 'alidns':
                 if (!config.data.aliyun_access_key_id || !config.data.aliyun_access_key_secret) {
                     showToast('请先前往设置页面配置阿里云密钥', 'error');
+                    return;
+                }
+                break;
+            case 'cloudflare':
+                if (!config.data.cloudflare_api_token) {
+                    showToast('请先前往设置页面配置 Cloudflare API Token', 'error');
                     return;
                 }
                 break;
@@ -3810,7 +3825,7 @@ async function loadSettings() {
         if (data.success) {
             document.getElementById('logRetentionDays').value = data.data.log_retention_days || 7;
             document.getElementById('maxAccessLogEntries').value = data.data.max_access_log_entries || 10000;
-            document.getElementById('certificateConfigPath').value = data.data.certificate_config_path || '/usr/trim/etc/network_gateway_cert.conf';
+            document.getElementById('certificateConfigPath').value = data.data.certificate_config_path || '/usr/trim/etc/network_cert_all.conf';
             document.getElementById('certificateSyncIntervalSeconds').value = data.data.certificate_sync_interval_seconds || 3600;
             // 加载 ACME 账户邮箱
             document.getElementById('globalAccountEmail').value = data.data.acme_account_email || '';
@@ -3819,6 +3834,7 @@ async function loadSettings() {
             document.getElementById('tencentCloudSecretKey').value = data.data.tencent_cloud_secret_key || '';
             document.getElementById('aliyunAccessKeyId').value = data.data.aliyun_access_key_id || '';
             document.getElementById('aliyunAccessKeySecret').value = data.data.aliyun_access_key_secret || '';
+            document.getElementById('cloudflareApiToken').value = data.data.cloudflare_api_token || '';
             const effectivePaths = data.data.effective_paths || {};
             document.getElementById('effectivePidPath').value = effectivePaths.pid_path || '';
             document.getElementById('effectiveSocketPath').value = effectivePaths.socket_path || '';
@@ -3846,7 +3862,7 @@ async function handleSaveSettings(e) {
         ...current.data,
         log_retention_days: parseInt(document.getElementById('logRetentionDays').value || '7', 10),
         max_access_log_entries: parseInt(document.getElementById('maxAccessLogEntries').value || '10000', 10),
-        certificate_config_path: document.getElementById('certificateConfigPath').value.trim() || '/usr/trim/etc/network_gateway_cert.conf',
+        certificate_config_path: document.getElementById('certificateConfigPath').value.trim() || '/usr/trim/etc/network_cert_all.conf',
         certificate_sync_interval_seconds: parseInt(document.getElementById('certificateSyncIntervalSeconds').value || '3600', 10)
     };
 
@@ -3880,7 +3896,8 @@ async function handleSaveCloudKeys(e) {
         tencent_cloud_secret_id: document.getElementById('tencentCloudSecretId').value.trim(),
         tencent_cloud_secret_key: document.getElementById('tencentCloudSecretKey').value.trim(),
         aliyun_access_key_id: document.getElementById('aliyunAccessKeyId').value.trim(),
-        aliyun_access_key_secret: document.getElementById('aliyunAccessKeySecret').value.trim()
+        aliyun_access_key_secret: document.getElementById('aliyunAccessKeySecret').value.trim(),
+        cloudflare_api_token: document.getElementById('cloudflareApiToken').value.trim()
     };
 
     try {

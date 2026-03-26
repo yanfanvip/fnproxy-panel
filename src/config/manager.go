@@ -13,7 +13,7 @@ import (
 	"fnproxy/security"
 )
 
-const defaultCertificateConfigPath = "/usr/trim/etc/network_gateway_cert.conf"
+const defaultCertificateConfigPath = "/usr/trim/etc/network_cert_all.conf"
 
 type Manager struct {
 	mu     sync.RWMutex

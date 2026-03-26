@@ -51,9 +51,16 @@ type acmeUser struct {
 }
 
 type fileSyncCertificateEntry struct {
-	Host string `json:"host"`
-	Cert string `json:"cert"`
-	Key  string `json:"key"`
+	Domain      string   `json:"domain"`      // 主域名
+	SAN         []string `json:"san"`         // 主题备用名称列表
+	Certificate string   `json:"certificate"` // 证书文件路径
+	Fullchain   string   `json:"fullchain"`   // 完整证书链文件路径（可选）
+	PrivateKey  string   `json:"privateKey"`  // 私钥文件路径
+	ValidFrom   int64    `json:"validFrom"`   // 有效期开始（毫秒时间戳）
+	ValidTo     int64    `json:"validTo"`     // 有效期结束（毫秒时间戳）
+	Sum         string   `json:"sum"`         // 证书摘要/校验和
+	Used        bool     `json:"used"`        // 是否正在使用
+	AppFlag     int      `json:"appFlag"`     // 应用标识
 }
 
 func managedCertificateDir() string {
@@ -736,17 +743,17 @@ func (m *CertificateManager) processConfigFileSync() {
 
 	desired := make(map[string]fileSyncCertificateEntry, len(entries))
 	for _, entry := range entries {
-		entry.Host = normalizeDomain(entry.Host)
-		entry.Cert = strings.TrimSpace(entry.Cert)
-		entry.Key = strings.TrimSpace(entry.Key)
-		if entry.Host == "" || entry.Cert == "" || entry.Key == "" {
+		entry.Domain = normalizeDomain(entry.Domain)
+		entry.Certificate = strings.TrimSpace(entry.Certificate)
+		entry.PrivateKey = strings.TrimSpace(entry.PrivateKey)
+		if entry.Domain == "" || entry.Certificate == "" || entry.PrivateKey == "" {
 			continue
 		}
 
 		id := buildFileSyncCertificateID(configPath, entry)
 		desired[id] = entry
 		if _, err := m.syncFileSyncCertificate(configPath, id, entry); err != nil {
-			fmt.Printf("同步外部证书失败 [%s]: %v\n", entry.Host, err)
+			fmt.Printf("同步外部证书失败 [%s]: %v\n", entry.Domain, err)
 		}
 	}
 
@@ -784,28 +791,34 @@ func readFileSyncCertificateEntries(path string) ([]fileSyncCertificateEntry, er
 }
 
 func buildFileSyncCertificateID(configPath string, entry fileSyncCertificateEntry) string {
-	sum := sha1.Sum([]byte(configPath + "|" + normalizeDomain(entry.Host)))
+	sum := sha1.Sum([]byte(configPath + "|" + normalizeDomain(entry.Domain)))
 	return "file-sync-" + hex.EncodeToString(sum[:8])
 }
 
 func (m *CertificateManager) syncFileSyncCertificate(configPath, id string, entry fileSyncCertificateEntry) (bool, error) {
 	existing := config.GetManager().GetCertificate(id)
 
-	certInfo, err := os.Stat(entry.Cert)
+	certInfo, err := os.Stat(entry.Certificate)
 	if err != nil {
 		return false, m.updateFileSyncError(existing, id, configPath, entry, fmt.Errorf("读取证书文件失败: %w", err))
 	}
-	keyInfo, err := os.Stat(entry.Key)
+	keyInfo, err := os.Stat(entry.PrivateKey)
 	if err != nil {
 		return false, m.updateFileSyncError(existing, id, configPath, entry, fmt.Errorf("读取私钥文件失败: %w", err))
 	}
 
+	// 构建域名列表：使用 SAN 列表，如果没有 SAN 则使用 Domain
+	domains := entry.SAN
+	if len(domains) == 0 {
+		domains = []string{entry.Domain}
+	}
+
 	needsReload := existing == nil ||
 		existing.Source != models.CertificateSourceFileSync ||
-		existing.CertPath != entry.Cert ||
-		existing.KeyPath != entry.Key ||
+		existing.CertPath != entry.Certificate ||
+		existing.KeyPath != entry.PrivateKey ||
 		existing.SourceConfigPath != configPath ||
-		!sameStringSlice(existing.Domains, []string{entry.Host}) ||
+		!sameStringSlice(existing.Domains, domains) ||
 		!timePtrEquals(existing.CertFileUpdatedAt, certInfo.ModTime()) ||
 		!timePtrEquals(existing.KeyFileUpdatedAt, keyInfo.ModTime()) ||
 		existing.Status != models.CertificateStatusValid
@@ -814,7 +827,7 @@ func (m *CertificateManager) syncFileSyncCertificate(configPath, id string, entr
 		return false, nil
 	}
 
-	loadedCert, metadata, err := loadCertificatePair(entry.Cert, entry.Key)
+	loadedCert, metadata, err := loadCertificatePair(entry.Certificate, entry.PrivateKey)
 	if err != nil {
 		return false, m.updateFileSyncError(existing, id, configPath, entry, err)
 	}
@@ -822,11 +835,11 @@ func (m *CertificateManager) syncFileSyncCertificate(configPath, id string, entr
 	now := time.Now()
 	cert := models.CertificateConfig{
 		ID:                id,
-		Name:              entry.Host,
-		Domains:           []string{entry.Host},
+		Name:              entry.Domain,
+		Domains:           domains,
 		Source:            models.CertificateSourceFileSync,
-		CertPath:          entry.Cert,
-		KeyPath:           entry.Key,
+		CertPath:          entry.Certificate,
+		KeyPath:           entry.PrivateKey,
 		SourceConfigPath:  configPath,
 		AutoRenew:         false,
 		RenewBeforeDays:   0,
@@ -842,9 +855,9 @@ func (m *CertificateManager) syncFileSyncCertificate(configPath, id string, entr
 	}
 
 	if existing != nil {
-		cert.Name = firstNonEmpty(existing.Name, entry.Host)
+		cert.Name = firstNonEmpty(existing.Name, entry.Domain)
 		cert.CreatedAt = existing.CreatedAt
-		if strings.TrimSpace(existing.Name) != "" && normalizeDomain(existing.Name) != entry.Host {
+		if strings.TrimSpace(existing.Name) != "" && normalizeDomain(existing.Name) != entry.Domain {
 			cert.Name = existing.Name
 		}
 	}
@@ -871,15 +884,21 @@ func (m *CertificateManager) syncFileSyncCertificate(configPath, id string, entr
 }
 
 func (m *CertificateManager) updateFileSyncError(existing *models.CertificateConfig, id, configPath string, entry fileSyncCertificateEntry, sourceErr error) error {
+	// 构建域名列表：使用 SAN 列表，如果没有 SAN 则使用 Domain
+	domains := entry.SAN
+	if len(domains) == 0 {
+		domains = []string{entry.Domain}
+	}
+
 	if existing == nil {
 		now := time.Now()
 		failed := models.CertificateConfig{
 			ID:               id,
-			Name:             entry.Host,
-			Domains:          sanitizeDomains([]string{entry.Host}),
+			Name:             entry.Domain,
+			Domains:          sanitizeDomains(domains),
 			Source:           models.CertificateSourceFileSync,
-			CertPath:         entry.Cert,
-			KeyPath:          entry.Key,
+			CertPath:         entry.Certificate,
+			KeyPath:          entry.PrivateKey,
 			SourceConfigPath: configPath,
 			Status:           models.CertificateStatusError,
 			LastError:        sourceErr.Error(),
@@ -1036,18 +1055,18 @@ func (m *CertificateManager) configureChallengeProvider(client *lego.Client, cer
 		}
 		fmt.Printf("[证书申请 %s] DNS provider创建成功: %s\n", cert.ID, cert.DNSProvider)
 		// 配置DNS-01挑战：
-		// 1. 禁用权威NS传播检查（国内 NS 查询往往超时）
+		// 1. 使用递归NS传播检查（通过指定的国内DNS），避免直接查询权威NS超时
 		// 2. 使用国内公共DNS做传播检查，确认TXT记录已可见后再通知ACME
-		// 3. 轮询超时120秒，间隔10秒检查一次
+		// 3. 轮询超时300秒，间隔10秒检查一次
 		dns01.ClearFqdnCache()
 		return client.Challenge.SetDNS01Provider(provider,
 			dns01.AddDNSTimeout(30*time.Second),
-			dns01.DisableAuthoritativeNssPropagationRequirement(),
 			dns01.AddRecursiveNameservers([]string{
 				"119.29.29.29:53", // 腾讯公共DNS
 				"223.5.5.5:53",   // 阿里公共DNS
 			}),
-			dns01.PropagationWait(120*time.Second, false),
+			dns01.RecursiveNSsPropagationRequirement(),
+			dns01.PropagationWait(300*time.Second, false),
 		)
 	default:
 		return errors.New("不支持的证书校验方式")
@@ -1087,18 +1106,30 @@ func newDNSProvider(cert models.CertificateConfig) (challenge.Provider, error) {
 			cfg.APIKey = strings.TrimSpace(globalConfig.AliyunAccessKeyId)
 			cfg.SecretKey = strings.TrimSpace(globalConfig.AliyunAccessKeySecret)
 		}
-		// 设置HTTP超时为60秒
-		cfg.HTTPTimeout = 60 * time.Second
-		// 设置传播超时为120秒
-		cfg.PropagationTimeout = 120 * time.Second
+		// 设置HTTP超时为180秒
+		cfg.HTTPTimeout = 180 * time.Second
+		// 设置传播超时为300秒
+		cfg.PropagationTimeout = 300 * time.Second
 		fmt.Printf("[阿里云DNS] 配置信息: AccessKey=%s\n", maskSecret(cfg.APIKey))
 		return alidns.NewDNSProviderConfig(cfg)
 	case models.CertificateDNSCloudflare:
 		cfg := cloudflare.NewDefaultConfig()
-		cfg.AuthEmail = strings.TrimSpace(cert.DNSConfig.CloudflareEmail)
-		cfg.AuthKey = strings.TrimSpace(cert.DNSConfig.CloudflareAPIKey)
-		cfg.AuthToken = strings.TrimSpace(cert.DNSConfig.CloudflareDNSAPIToken)
-		cfg.ZoneToken = strings.TrimSpace(cert.DNSConfig.CloudflareZoneToken)
+		// 优先从证书配置读取，如果没有则从全局配置读取
+		if cert.DNSConfig.CloudflareDNSAPIToken != "" {
+			cfg.AuthToken = strings.TrimSpace(cert.DNSConfig.CloudflareDNSAPIToken)
+		} else if globalConfig.CloudflareAPIToken != "" {
+			cfg.AuthToken = strings.TrimSpace(globalConfig.CloudflareAPIToken)
+		}
+		// 保留向后兼容：证书配置中的其他字段
+		if cert.DNSConfig.CloudflareEmail != "" {
+			cfg.AuthEmail = strings.TrimSpace(cert.DNSConfig.CloudflareEmail)
+		}
+		if cert.DNSConfig.CloudflareAPIKey != "" {
+			cfg.AuthKey = strings.TrimSpace(cert.DNSConfig.CloudflareAPIKey)
+		}
+		if cert.DNSConfig.CloudflareZoneToken != "" {
+			cfg.ZoneToken = strings.TrimSpace(cert.DNSConfig.CloudflareZoneToken)
+		}
 		return cloudflare.NewDNSProviderConfig(cfg)
 	case models.CertificateDNSManual:
 		// 手动DNS验证，返回一个特殊的provider，会暂停等待用户手动添加记录
@@ -1889,7 +1920,7 @@ func (m *CertificateManager) ensureFallbackCertificate() {
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   "fnproxy.local",
+			CommonName:   "localhost",
 			Organization: []string{"fnproxy"},
 		},
 		NotBefore:             time.Now().Add(-time.Hour),
@@ -1897,7 +1928,7 @@ func (m *CertificateManager) ensureFallbackCertificate() {
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost", "fnproxy.local"},
+		DNSNames:              []string{"localhost"},
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)

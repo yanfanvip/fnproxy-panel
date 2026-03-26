@@ -2986,8 +2986,8 @@
                         </div>
                         <div class="form-group">
                             <label>外部证书配置文件路径</label>
-                            <input type="text" id="certificateConfigPath" class="form-control" placeholder='/usr/trim/etc/network_gateway_cert.conf'>
-                            <small class="helper-text">配置文件格式为 JSON 数组：[{ "host": "...", "cert": "...", "key": "..." }]</small>
+                            <input type="text" id="certificateConfigPath" class="form-control" placeholder='/usr/trim/etc/network_cert_all.conf'>
+                            <small class="helper-text">配置文件格式为 JSON 数组：[{ "domain": "example.com", "san": ["example.com", "*.example.com"], "certificate": "/path/to/cert.crt", "privateKey": "/path/to/key.key", "fullchain": "/path/to/fullchain.crt" }]</small>
                         </div>
                         <div class="form-group">
                             <label>外部证书同步周期（秒）</label>
@@ -3029,6 +3029,12 @@
                         <div class="form-group">
                             <label>AccessKeySecret</label>
                             <input type="password" id="aliyunAccessKeySecret" class="form-control" placeholder="输入阿里云 AccessKeySecret">
+                        </div>
+                        <h3 style="font-size: 14px; margin: 24px 0 12px; color: var(--text-secondary);">Cloudflare</h3>
+                        <div class="form-group">
+                            <label>API Token</label>
+                            <input type="password" id="cloudflareApiToken" class="form-control" placeholder="输入 Cloudflare API Token（需具有 DNS:Edit 权限）">
+                            <p class="helper-text">创建 Token 时请授予 Zone:Read 和 DNS:Edit 权限</p>
                         </div>
                         <button type="submit" class="btn btn-primary">保存密钥</button>
                     </form>

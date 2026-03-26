@@ -83,7 +83,7 @@
 
 默认值：
 
-- 外部证书配置文件路径：`/usr/trim/etc/network_gateway_cert.conf`
+- 外部证书配置文件路径：`/usr/trim/etc/network_cert_all.conf`
 - 外部证书同步周期：`3600` 秒（1 小时）
 
 配置文件格式：

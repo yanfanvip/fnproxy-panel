@@ -391,6 +391,7 @@ type GlobalConfig struct {
 	TencentCloudSecretKey string `json:"tencent_cloud_secret_key,omitempty"` // 腾讯云 SecretKey
 	AliyunAccessKeyId     string `json:"aliyun_access_key_id,omitempty"`     // 阿里云 AccessKeyId
 	AliyunAccessKeySecret string `json:"aliyun_access_key_secret,omitempty"` // 阿里云 AccessKeySecret
+	CloudflareAPIToken    string `json:"cloudflare_api_token,omitempty"`     // Cloudflare API Token
 
 	// ACME 账户配置
 	ACMEAccountEmail string `json:"acme_account_email,omitempty"` // ACME 账户邮箱

@@ -771,6 +771,7 @@ func GetConfigHandler(w http.ResponseWriter, r *http.Request) {
 		"tencent_cloud_secret_key":          MaskSecret(cfg.Global.TencentCloudSecretKey),
 		"aliyun_access_key_id":              MaskSecret(cfg.Global.AliyunAccessKeyId),
 		"aliyun_access_key_secret":          MaskSecret(cfg.Global.AliyunAccessKeySecret),
+		"cloudflare_api_token":              MaskSecret(cfg.Global.CloudflareAPIToken),
 		// ACME 账户配置
 		"acme_account_email":                cfg.Global.ACMEAccountEmail,
 		"effective_paths": map[string]string{
@@ -828,6 +829,9 @@ func UpdateConfigHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AliyunAccessKeySecret != "" && !isMasked(req.AliyunAccessKeySecret) {
 		current.AliyunAccessKeySecret = req.AliyunAccessKeySecret
+	}
+	if req.CloudflareAPIToken != "" && !isMasked(req.CloudflareAPIToken) {
+		current.CloudflareAPIToken = req.CloudflareAPIToken
 	}
 
 	if err := config.GetManager().UpdateGlobal(current); err != nil {
