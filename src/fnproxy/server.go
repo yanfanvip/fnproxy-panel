@@ -903,10 +903,12 @@ func (s *Server) createReverseProxyHandler(service models.ServiceConfig, proxies
 		if cfg.BufferRequests && r.Body != nil && r.Body != http.NoBody {
 			body, readErr := io.ReadAll(r.Body)
 			r.Body.Close()
-			if readErr == nil {
-				r.Body = io.NopCloser(bytes.NewReader(body))
-				r.ContentLength = int64(len(body))
+			if readErr != nil {
+				http.Error(w, "读取请求体失败", http.StatusBadRequest)
+				return
 			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(body))
 		}
 		// 限制最大请求体大小
 		if cfg.MaxBodySize > 0 {
@@ -1258,20 +1260,18 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 	defer clientConn.Close()
 
 	// 双向转发 WebSocket 消息
-	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
 
 	// 客户端 -> 后端
 	go func() {
-		defer func() {
-			select {
-			case <-done:
-			default:
-				close(done)
-			}
-		}()
+		defer wg.Done()
 		for {
 			messageType, message, err := clientConn.ReadMessage()
 			if err != nil {
+				// 关闭后端连接的写端，通知后端不再发送数据
+				backendConn.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 				return
 			}
 			if err := backendConn.WriteMessage(messageType, message); err != nil {
@@ -1282,16 +1282,13 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 
 	// 后端 -> 客户端
 	go func() {
-		defer func() {
-			select {
-			case <-done:
-			default:
-				close(done)
-			}
-		}()
+		defer wg.Done()
 		for {
 			messageType, message, err := backendConn.ReadMessage()
 			if err != nil {
+				// 关闭客户端连接的写端，通知客户端不再发送数据
+				clientConn.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 				return
 			}
 			if err := clientConn.WriteMessage(messageType, message); err != nil {
@@ -1300,9 +1297,8 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 		}
 	}()
 
-	// 等待任意一个方向关闭，然后关闭两个连接以确保另一个 goroutine 也能退出
-	<-done
-	// 连接关闭会导致另一个 goroutine 的 ReadMessage 返回错误并退出
+	wg.Wait()
+	// 两个 goroutine 都已退出，连接将由 defer 关闭
 }
 
 // mergeExtendJSON 将 ExtendJSON 中的字段合并到 configData 中（ExtendJSON 优先级高）
