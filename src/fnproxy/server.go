@@ -145,26 +145,33 @@ const defaultSecureSecret = security.DefaultSecureSecret
 // newUpstreamTLSConfig 反代访问上游 HTTPS、以及 WebSocket 拨号 WSS 时使用的 TLS 客户端配置。
 // 始终跳过对上游证书的校验（自签、过期、CN/SAN 不匹配等），便于内网或测试环境对接。
 func newUpstreamTLSConfig() *tls.Config {
-	return &tls.Config{InsecureSkipVerify: true}
+	return &tls.Config{
+		InsecureSkipVerify: true,
+		// 启用 TLS 会话缓存，加速 TLS 重连
+		ClientSessionCache: tls.NewLRUClientSessionCache(256),
+	}
 }
 
-// 全局共享的 HTTP Transport，启用连接复用
+// 全局共享的 HTTP Transport，启用连接复用和性能优化
 var sharedTransport = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
 	DialContext: (&net.Dialer{
-		Timeout:   30 * time.Second,
+		Timeout:   10 * time.Second,  // 连接超时缩短
 		KeepAlive: 30 * time.Second,
+		DualStack: true,              // 启用 IPv4/IPv6 双栈
 	}).DialContext,
-	ForceAttemptHTTP2:     false,             // 不强制 HTTP/2，让协议自动协商
-	MaxIdleConns:          200,               // 最大空闲连接数
-	MaxIdleConnsPerHost:   50,                // 每个主机最大空闲连接数
-	MaxConnsPerHost:       100,               // 每个主机最大连接数
-	IdleConnTimeout:       90 * time.Second,  // 空闲连接超时
+	ForceAttemptHTTP2:     true,              // 尝试使用 HTTP/2，多路复用提升并发性能
+	MaxIdleConns:          500,               // 增加最大空闲连接数
+	MaxIdleConnsPerHost:   100,               // 增加每个主机最大空闲连接数
+	MaxConnsPerHost:       200,               // 增加每个主机最大连接数
+	IdleConnTimeout:       120 * time.Second, // 空闲连接超时延长
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
 	ResponseHeaderTimeout: 60 * time.Second,
 	DisableCompression:    true,              // 禁用自动压缩处理，让客户端与后端直接协商
 	DisableKeepAlives:     false,             // 保持连接复用
+	WriteBufferSize:       64 * 1024,         // 增加写缓冲区
+	ReadBufferSize:        64 * 1024,         // 增加读缓冲区
 	TLSClientConfig:       newUpstreamTLSConfig(),
 }
 
@@ -370,8 +377,11 @@ func (s *Server) buildListenerHandler(listenerID string) http.Handler {
 
 func (s *Server) buildHTTPServer(listener models.PortListener) *http.Server {
 	return &http.Server{
-		Addr:    fmt.Sprintf(":%d", listener.Port),
-		Handler: s.buildListenerHandler(listener.ID),
+		Addr:              fmt.Sprintf(":%d", listener.Port),
+		Handler:           s.buildListenerHandler(listener.ID),
+		ReadHeaderTimeout: 10 * time.Second,  // 读取请求头超时
+		IdleTimeout:       120 * time.Second, // 空闲连接超时，支持 Keep-Alive
+		MaxHeaderBytes:    1 << 20,           // 最大请求头大小 1MB
 	}
 }
 
@@ -393,7 +403,132 @@ func (s *Server) createNetListener(listener models.PortListener, http2 bool) (ne
 		GetCertificate: utils.GetCertificateManager().GetTLSCertificateForListener(listener.ID),
 		NextProtos:     nextProtos,
 	}
-	return tls.NewListener(baseListener, tlsConfig), nil
+	// 使用协议嗅探监听器，支持 HTTP 自动跳转到 HTTPS
+	return newProtocolSniffListener(baseListener, tlsConfig), nil
+}
+
+// protocolSniffListener 是一个协议嗅探监听器，能够检测客户端发送的是 HTTP 还是 TLS
+// 如果是 HTTP 请求，返回 301 重定向到 HTTPS
+type protocolSniffListener struct {
+	net.Listener
+	tlsConfig *tls.Config
+}
+
+// protocolSniffConn 包装连接，用于协议检测
+type protocolSniffConn struct {
+	net.Conn
+	bufReader *bufio.Reader
+	isTLS     bool
+}
+
+func (c *protocolSniffConn) Read(p []byte) (n int, err error) {
+	return c.bufReader.Read(p)
+}
+
+// newProtocolSniffListener 创建协议嗅探监听器
+func newProtocolSniffListener(base net.Listener, tlsConfig *tls.Config) net.Listener {
+	return &protocolSniffListener{
+		Listener:  base,
+		tlsConfig: tlsConfig,
+	}
+}
+
+// Accept 接受连接并检测协议类型
+func (l *protocolSniffListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+
+		// 设置读取超时，防止客户端不发送数据导致连接卡住
+		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+		// 使用带缓冲的 reader 来偷看前几个字节
+		bufReader := bufio.NewReader(conn)
+
+		// 偷看前 5 个字节来判断协议类型
+		peek, err := bufReader.Peek(5)
+		if err != nil {
+			// 如果无法读取，可能是连接已关闭或超时，继续接受下一个连接
+			conn.Close()
+			continue
+		}
+
+		// 清除读取超时
+		conn.SetReadDeadline(time.Time{})
+
+		// TLS ClientHello 的第一个字节是 0x16 (ContentType: Handshake)
+		// HTTP 请求通常以 "GET ", "POST ", "HEAD ", "PUT ", "DELETE", "OPTIONS", "PATCH " 等开头
+		isTLS := len(peek) > 0 && peek[0] == 0x16
+
+		if !isTLS {
+			// 这是一个 HTTP 请求，同步处理重定向后关闭连接，继续接受下一个连接
+			l.handleHTTPRedirect(conn, bufReader)
+			conn.Close()
+			continue
+		}
+
+		// 这是一个 TLS 连接，包装后返回
+		tlsConn := tls.Server(&protocolSniffConn{Conn: conn, bufReader: bufReader, isTLS: true}, l.tlsConfig)
+		return tlsConn, nil
+	}
+}
+
+// handleHTTPRedirect 处理 HTTP 重定向
+func (l *protocolSniffListener) handleHTTPRedirect(conn net.Conn, bufReader *bufio.Reader) {
+	// 设置读取超时
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
+
+	// 读取 HTTP 请求的第一行来获取 Host
+	line, err := bufReader.ReadString('\n')
+	if err != nil {
+		return
+	}
+
+	// 解析请求行，例如: "GET /path HTTP/1.1"
+	parts := strings.Split(strings.TrimSpace(line), " ")
+	if len(parts) < 2 {
+		return
+	}
+
+	path := parts[1]
+
+	// 继续读取请求头，查找 Host 头
+	host := ""
+	for {
+		line, err := bufReader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break // 请求头结束
+		}
+		if strings.HasPrefix(strings.ToLower(line), "host:") {
+			host = strings.TrimSpace(line[5:])
+			break
+		}
+	}
+
+	// 构建重定向 URL
+	var redirectURL string
+	if host != "" {
+		redirectURL = fmt.Sprintf("https://%s%s", host, path)
+	} else {
+		// 如果没有 Host 头，使用连接的本地地址
+		redirectURL = fmt.Sprintf("https://%s%s", conn.LocalAddr().String(), path)
+	}
+
+	// 发送 301 重定向响应
+	response := fmt.Sprintf("HTTP/1.1 301 Moved Permanently\r\n"+
+		"Location: %s\r\n"+
+		"Content-Type: text/html; charset=utf-8\r\n"+
+		"Content-Length: 0\r\n"+
+		"Connection: close\r\n\r\n", redirectURL)
+
+	conn.Write([]byte(response))
 }
 
 func (s *Server) serveListener(server *http.Server, listener models.PortListener, netListener net.Listener) {
@@ -601,8 +736,25 @@ func (s *Server) createReverseProxyHandler(service models.ServiceConfig, proxies
 
 	var cfg models.ReverseProxyConfig
 	configData = mergeExtendJSON(configData, service.ExtendJSON)
+
+	// 检查 ExtendJSON 中是否显式设置了 preserve_host
+	preserveHostExplicitlySet := false
+	if service.ExtendJSON != "" {
+		var extendMap map[string]interface{}
+		if err := json.Unmarshal([]byte(service.ExtendJSON), &extendMap); err == nil {
+			if _, ok := extendMap["preserve_host"]; ok {
+				preserveHostExplicitlySet = true
+			}
+		}
+	}
+
 	if err := json.Unmarshal(configData, &cfg); err != nil {
 		return nil, err
+	}
+
+	// 如果用户没有显式设置 preserve_host，默认为 true
+	if !preserveHostExplicitlySet {
+		cfg.PreserveHost = true
 	}
 	if strings.TrimSpace(cfg.Upstream) == "" {
 		return nil, fmt.Errorf("代理地址不能为空")
@@ -937,11 +1089,12 @@ func setForwardedHeaders(req *http.Request, origHeader http.Header, remoteAddr, 
 
 // WebSocket upgrader 配置
 var wsUpgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
+	ReadBufferSize:  32 * 1024, // 增加读缓冲区
+	WriteBufferSize: 32 * 1024, // 增加写缓冲区
 	CheckOrigin: func(r *http.Request) bool {
 		return true // 允许所有来源
 	},
+	EnableCompression: true, // 启用 WebSocket 压缩
 }
 
 // handleWebSocketProxy 使用 gorilla/websocket 处理 WebSocket 代理
@@ -990,12 +1143,27 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 	for _, header := range cfg.HideHeaderUp {
 		requestHeader.Del(header)
 	}
+	// WebSocket 代理始终保留客户端的 Origin，避免后端（如 VS Code Server）的跨域校验失败
+	if o := r.Header.Get("Origin"); o != "" {
+		requestHeader.Set("Origin", o)
+	}
+	// Referer 仍根据 PreserveHost 策略处理
 	if cfg.PreserveHost {
-		if o := r.Header.Get("Origin"); o != "" {
-			requestHeader.Set("Origin", o)
+		if ref := r.Header.Get("Referer"); ref != "" {
+			requestHeader.Set("Referer", ref)
 		}
 	} else {
-		rewriteOriginRefererToUpstream(requestHeader, targetURL, cfg.HostHeader)
+		if ref := r.Header.Get("Referer"); ref != "" {
+			if u, err := url.Parse(ref); err == nil && u.Host != "" {
+				host := targetURL.Host
+				if cfg.HostHeader != "" {
+					host = cfg.HostHeader
+				}
+				u.Scheme = targetURL.Scheme
+				u.Host = host
+				requestHeader.Set("Referer", u.String())
+			}
+		}
 	}
 	for key, value := range cfg.HeaderUp {
 		if value == "" {
@@ -1028,9 +1196,13 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 
 	// 连接后端 WebSocket
 	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig:  newUpstreamTLSConfig(),
+		HandshakeTimeout:  10 * time.Second,
+		TLSClientConfig:   newUpstreamTLSConfig(),
+		ReadBufferSize:    32 * 1024, // 默认 32KB 读缓冲区
+		WriteBufferSize:   32 * 1024, // 默认 32KB 写缓冲区
+		EnableCompression: true,      // 启用压缩
 	}
+	// 允许用户覆盖缓冲区配置
 	if cfg.WebSocketReadBuffer > 0 {
 		dialer.ReadBufferSize = cfg.WebSocketReadBuffer
 	}
@@ -1039,7 +1211,17 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 	}
 	// 如果原始请求有 subprotocol，传递给后端
 	if protocols := r.Header.Values("Sec-Websocket-Protocol"); len(protocols) > 0 {
-		dialer.Subprotocols = protocols
+		var subprotocols []string
+		for _, p := range protocols {
+			// 按逗号分割，并去除空格（Sec-WebSocket-Protocol 可能以逗号分隔多个协议）
+			for _, proto := range strings.Split(p, ",") {
+				proto = strings.TrimSpace(proto)
+				if proto != "" {
+					subprotocols = append(subprotocols, proto)
+				}
+			}
+		}
+		dialer.Subprotocols = subprotocols
 	}
 
 	backendConn, resp, err := dialer.Dial(backendURL.String(), requestHeader)
@@ -1076,18 +1258,23 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 	defer clientConn.Close()
 
 	// 双向转发 WebSocket 消息
-	errChan := make(chan error, 2)
+	done := make(chan struct{})
 
 	// 客户端 -> 后端
 	go func() {
+		defer func() {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}()
 		for {
 			messageType, message, err := clientConn.ReadMessage()
 			if err != nil {
-				errChan <- err
 				return
 			}
 			if err := backendConn.WriteMessage(messageType, message); err != nil {
-				errChan <- err
 				return
 			}
 		}
@@ -1095,21 +1282,27 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 
 	// 后端 -> 客户端
 	go func() {
+		defer func() {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}()
 		for {
 			messageType, message, err := backendConn.ReadMessage()
 			if err != nil {
-				errChan <- err
 				return
 			}
 			if err := clientConn.WriteMessage(messageType, message); err != nil {
-				errChan <- err
 				return
 			}
 		}
 	}()
 
-	// 等待任意一个方向出错
-	<-errChan
+	// 等待任意一个方向关闭，然后关闭两个连接以确保另一个 goroutine 也能退出
+	<-done
+	// 连接关闭会导致另一个 goroutine 的 ReadMessage 返回错误并退出
 }
 
 // mergeExtendJSON 将 ExtendJSON 中的字段合并到 configData 中（ExtendJSON 优先级高）
