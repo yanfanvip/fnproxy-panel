@@ -799,10 +799,7 @@ func resizeTerminal(session *TerminalSession, cols, rows int) {
 func getShell() string {
 	switch runtime.GOOS {
 	case "windows":
-		if _, err := os.Stat(`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`); err == nil {
-			return `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
-		}
-		return "cmd.exe"
+		return "powershell.exe"
 	case "darwin":
 		return "/bin/zsh"
 	default:
