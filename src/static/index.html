@@ -581,8 +581,12 @@
             transform: none;
             border: none;
         }
+        .terminal-session-modal:fullscreen .terminal-session-modal-header,
+        .terminal-session-modal:fullscreen .terminal-session-modal-footer {
+            display: none;
+        }
         .terminal-session-modal:fullscreen .terminal-session-modal-body {
-            height: calc(100vh - 67px);
+            height: 100vh;
         }
         .terminal-session-modal-header {
             display: flex;
@@ -1450,6 +1454,8 @@
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            display: inline-block;
+            vertical-align: middle;
         }
         .listener-service-card-status-corner {
             position: absolute;

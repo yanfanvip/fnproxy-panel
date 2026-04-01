@@ -3358,6 +3358,24 @@ function initTerminalEmulator() {
         terminalResizeBound = true;
     }
 
+    // 阻止 ESC 键在全屏模式下退出全屏（但允许在终端内使用 ESC）
+    if (!terminalFocusBound) {
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                const modal = document.getElementById('terminalSessionModal');
+                // 只有在终端最大化状态下阻止 ESC 默认行为
+                if (document.fullscreenElement === modal) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // 将 ESC 键传递给终端
+                    if (terminalInstance && ws && ws.readyState === WebSocket.OPEN) {
+                        sendTerminalData('\x1b');
+                    }
+                }
+            }
+        }, true);
+    }
+
     window.setTimeout(() => {
         fitTerminalToContainer();
         terminalInstance.focus();

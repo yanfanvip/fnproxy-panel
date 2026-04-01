@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1719,27 +1720,41 @@ func (m *CertificateManager) matchCertificateByServiceBindingLocked(listenerID, 
 	return nil
 }
 
+// certificateMatch 证书匹配结果
+type certificateMatch struct {
+	cert      *tls.Certificate
+	isExact   bool      // 是否精确匹配
+	isWildcard bool     // 是否泛域名匹配
+	expiresAt time.Time // 过期时间
+}
+
 func (m *CertificateManager) matchCertificateByDomainLocked(host string) *tls.Certificate {
-	var wildcardMatch *tls.Certificate
+	if host == "" {
+		return nil
+	}
+
+	var matches []certificateMatch
 
 	for _, loaded := range m.loaded {
 		if loaded.tlsCert == nil {
 			continue
 		}
-		// 首先检查证书配置中的域名
+
+		// 收集所有匹配的域名
+		var matchedDomains []string
+		
+		// 检查证书配置中的域名
 		for _, domain := range loaded.config.Domains {
 			domain = normalizeDomain(domain)
 			if domain == "" {
 				continue
 			}
-			if domain == host {
-				return loaded.tlsCert
-			}
-			if wildcardMatch == nil && matchCertificateDomain(domain, host) {
-				wildcardMatch = loaded.tlsCert
+			if domain == host || matchCertificateDomain(domain, host) {
+				matchedDomains = append(matchedDomains, domain)
 			}
 		}
-		// 然后检查证书实际包含的域名（用于通配符证书匹配）
+		
+		// 检查证书实际包含的域名
 		if loaded.leaf != nil {
 			certDomains := sanitizeDomains(append([]string{loaded.leaf.Subject.CommonName}, loaded.leaf.DNSNames...))
 			for _, domain := range certDomains {
@@ -1747,16 +1762,73 @@ func (m *CertificateManager) matchCertificateByDomainLocked(host string) *tls.Ce
 				if domain == "" {
 					continue
 				}
-				if domain == host {
-					return loaded.tlsCert
-				}
-				if wildcardMatch == nil && matchCertificateDomain(domain, host) {
-					wildcardMatch = loaded.tlsCert
+				if domain == host || matchCertificateDomain(domain, host) {
+					// 避免重复添加
+					found := false
+					for _, d := range matchedDomains {
+						if d == domain {
+							found = true
+							break
+						}
+					}
+					if !found {
+						matchedDomains = append(matchedDomains, domain)
+					}
 				}
 			}
 		}
+
+		if len(matchedDomains) == 0 {
+			continue
+		}
+
+		// 判断匹配类型：优先精确匹配，其次是泛域名匹配
+		isExact := false
+		isWildcard := false
+		for _, domain := range matchedDomains {
+			if domain == host {
+				isExact = true
+				break
+			}
+			if strings.HasPrefix(domain, "*.") {
+				isWildcard = true
+			}
+		}
+
+		// 获取过期时间
+		expiresAt := time.Time{}
+		if loaded.leaf != nil {
+			expiresAt = loaded.leaf.NotAfter
+		}
+
+		matches = append(matches, certificateMatch{
+			cert:       loaded.tlsCert,
+			isExact:    isExact,
+			isWildcard: isWildcard,
+			expiresAt:  expiresAt,
+		})
 	}
-	return wildcardMatch
+
+	if len(matches) == 0 {
+		return nil
+	}
+
+	// 优先级排序：
+	// 1. 精确匹配优先于泛域名匹配
+	// 2. 如果都是精确匹配或都是泛域名匹配，选择过期时间最晚的
+	sort.Slice(matches, func(i, j int) bool {
+		// 精确匹配优先
+		if matches[i].isExact && !matches[j].isExact {
+			return true
+		}
+		if !matches[i].isExact && matches[j].isExact {
+			return false
+		}
+		// 同类型匹配，选择过期时间最晚的
+		return matches[i].expiresAt.After(matches[j].expiresAt)
+	})
+
+	return matches[0].cert
 }
 
 func needsACMEReissue(existing, updated models.CertificateConfig) bool {
