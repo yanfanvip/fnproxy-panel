@@ -142,6 +142,12 @@ var once sync.Once
 
 const defaultSecureSecret = security.DefaultSecureSecret
 
+// newUpstreamTLSConfig 反代访问上游 HTTPS、以及 WebSocket 拨号 WSS 时使用的 TLS 客户端配置。
+// 始终跳过对上游证书的校验（自签、过期、CN/SAN 不匹配等），便于内网或测试环境对接。
+func newUpstreamTLSConfig() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true}
+}
+
 // 全局共享的 HTTP Transport，启用连接复用
 var sharedTransport = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
@@ -159,9 +165,7 @@ var sharedTransport = &http.Transport{
 	ResponseHeaderTimeout: 60 * time.Second,
 	DisableCompression:    true,              // 禁用自动压缩处理，让客户端与后端直接协商
 	DisableKeepAlives:     false,             // 保持连接复用
-	TLSClientConfig: &tls.Config{
-		InsecureSkipVerify: true,             // 跳过后端 HTTPS 证书验证
-	},
+	TLSClientConfig:       newUpstreamTLSConfig(),
 }
 
 // GetServer 获取代理服务器单例
@@ -612,20 +616,20 @@ func (s *Server) createReverseProxyHandler(service models.ServiceConfig, proxies
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 	// 配置 Director 设置请求头
 	proxy.Director = func(req *http.Request) {
-		// 保存原始请求信息用于设置转发头
 		originalHost := req.Host
 		originalRemoteAddr := req.RemoteAddr
-		originalTLS := req.TLS
+		origHeader := req.Header.Clone()
 
 		req.URL.Scheme = targetURL.Scheme
 		req.URL.Host = targetURL.Host
 
-		// Host 头处理
+		if len(cfg.AllowHeaderUp) > 0 {
+			applyAllowHeaderUp(req.Header, origHeader, cfg.AllowHeaderUp)
+		}
+
 		if cfg.PreserveHost {
-			// 保留原始 Host 头
 			req.Host = originalHost
 		} else if cfg.HostHeader != "" {
-			// 使用自定义 Host 头
 			req.Host = cfg.HostHeader
 		} else {
 			req.Host = targetURL.Host
@@ -651,6 +655,11 @@ func (s *Server) createReverseProxyHandler(service models.ServiceConfig, proxies
 			req.Header.Del(header)
 		}
 
+		// preserve_host=false：Host 已指向上游；Origin、Referer 同步为上游身份（在 header_up 之前，便于 header_up 覆盖）
+		if !cfg.PreserveHost {
+			rewriteOriginRefererToUpstream(req.Header, targetURL, cfg.HostHeader)
+		}
+
 		// 添加/修改发送给上游的请求头
 		for key, value := range cfg.HeaderUp {
 			if value == "" {
@@ -664,24 +673,22 @@ func (s *Server) createReverseProxyHandler(service models.ServiceConfig, proxies
 			}
 		}
 
-		// 真实IP转发
-		if cfg.HideRealIP {
-			// 主动清除所有IP相关转发头
-			req.Header.Del("X-Real-IP")
-			req.Header.Del("X-Forwarded-For")
-			req.Header.Del("X-Forwarded-Host")
-			req.Header.Del("X-Forwarded-Proto")
+		// 真实 IP / 转发头（omit_proxy_headers 优先级最高：不附带、不保留任何代理转发信息）
+		if cfg.OmitProxyHeaders {
+			stripProxyIdentityHeaders(req.Header)
+		} else if cfg.HideRealIP {
+			stripProxyIdentityHeaders(req.Header)
 		} else if !cfg.TrustProxyHeaders {
-			// 确定真实客户端IP
 			realAddr := originalRemoteAddr
 			if cfg.ClientIPHeader != "" {
-				if headerVal := req.Header.Get(cfg.ClientIPHeader); headerVal != "" {
+				if headerVal := origHeader.Get(cfg.ClientIPHeader); headerVal != "" {
 					parts := strings.Split(headerVal, ",")
 					realAddr = strings.TrimSpace(parts[0])
 				}
 			}
-			setForwardedHeaders(req, realAddr, originalHost, originalTLS != nil)
+			setForwardedHeaders(req, origHeader, realAddr, originalHost, utils.RequestIsHTTPS(req))
 		}
+		req.Header.Del("Host")
 	}
 	// Transport 配置：默认使用全局共享 Transport，如有超时覆盖则克隆一个
 	if cfg.ResponseTimeout > 0 {
@@ -755,7 +762,7 @@ func (s *Server) createReverseProxyHandler(service models.ServiceConfig, proxies
 		}
 		// 检查是否是 WebSocket 升级请求
 		if isWebSocketUpgrade(r) {
-			handleWebSocketProxy(w, r, targetURL)
+			handleWebSocketProxy(w, r, targetURL, cfg)
 			return
 		}
 		proxy.ServeHTTP(w, r)
@@ -777,33 +784,155 @@ func getClientIP(remoteAddr string) string {
 	return remoteAddr
 }
 
-// setForwardedHeaders 设置代理转发头，向后端传递真实客户端信息
-func setForwardedHeaders(req *http.Request, remoteAddr, originalHost string, isHTTPS bool) {
-	clientIP := getClientIP(remoteAddr)
-
-	// X-Real-IP: 直接客户端IP
-	req.Header.Set("X-Real-IP", clientIP)
-
-	// X-Forwarded-For: 追加到已有的转发链
-	if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
-		req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
-	} else {
-		req.Header.Set("X-Forwarded-For", clientIP)
+// allowHeaderUpSet 构建规范化后的请求头白名单（忽略空串）。
+func allowHeaderUpSet(allow []string) map[string]struct{} {
+	m := make(map[string]struct{})
+	for _, a := range allow {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		m[http.CanonicalHeaderKey(a)] = struct{}{}
 	}
+	return m
+}
 
-	// X-Forwarded-Host: 原始请求的 Host
-	if req.Header.Get("X-Forwarded-Host") == "" {
-		req.Header.Set("X-Forwarded-Host", originalHost)
+// applyAllowHeaderUp 将 dst 替换为「仅含 orig 中、且名称在白名单内的头」；并移除 Host 键（由 req.Host 决定发往上游的 Host）。
+func applyAllowHeaderUp(dst, orig http.Header, allow []string) {
+	allowed := allowHeaderUpSet(allow)
+	if len(allowed) == 0 {
+		for k := range dst {
+			delete(dst, k)
+		}
+		dst.Del("Host")
+		return
 	}
+	for k := range dst {
+		delete(dst, k)
+	}
+	for name, vals := range orig {
+		canon := http.CanonicalHeaderKey(name)
+		if _, ok := allowed[canon]; !ok {
+			continue
+		}
+		dst[canon] = append([]string(nil), vals...)
+	}
+	dst.Del("Host")
+}
 
-	// X-Forwarded-Proto: 原始请求的协议
-	if req.Header.Get("X-Forwarded-Proto") == "" {
-		if isHTTPS {
-			req.Header.Set("X-Forwarded-Proto", "https")
-		} else {
-			req.Header.Set("X-Forwarded-Proto", "http")
+// wsDialNeverForwardHeader WebSocket 拨号时永不转发的头（握手由库重建或属于逐跳）。
+func wsDialNeverForwardHeader(canon string) bool {
+	switch canon {
+	case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
+		"Te", "Trailer", "Transfer-Encoding", "Upgrade":
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(canon), "sec-websocket") {
+		return true
+	}
+	return false
+}
+
+// copyWSHeadersWithOptionalAllow 构建发往上游 WebSocket 的 Header；allow 非空时仅复制白名单内且非 wsDialNeverForward 的字段。
+func copyWSHeadersWithOptionalAllow(dst http.Header, src http.Header, allow []string) {
+	if len(allow) == 0 {
+		excludeHeaders := map[string]bool{
+			"Connection": true, "Keep-Alive": true, "Proxy-Authenticate": true,
+			"Proxy-Authorization": true, "Te": true, "Trailer": true,
+			"Transfer-Encoding": true, "Upgrade": true,
+			"Sec-Websocket-Key": true, "Sec-Websocket-Version": true,
+			"Sec-Websocket-Extensions": true, "Sec-Websocket-Protocol": true,
+		}
+		for key, values := range src {
+			if excludeHeaders[key] {
+				continue
+			}
+			keyLower := strings.ToLower(key)
+			if strings.HasPrefix(keyLower, "sec-websocket") {
+				continue
+			}
+			if keyLower == "origin" {
+				continue
+			}
+			for _, v := range values {
+				dst.Add(key, v)
+			}
+		}
+		return
+	}
+	allowed := allowHeaderUpSet(allow)
+	for name, vals := range src {
+		canon := http.CanonicalHeaderKey(name)
+		if wsDialNeverForwardHeader(canon) {
+			continue
+		}
+		if _, ok := allowed[canon]; !ok {
+			continue
+		}
+		for _, v := range vals {
+			dst.Add(canon, v)
 		}
 	}
+}
+
+// stripProxyIdentityHeaders 移除常见代理/转发相关请求头（不添加新头，仅删除）。
+func stripProxyIdentityHeaders(h http.Header) {
+	names := []string{
+		"X-Real-IP",
+		"X-Forwarded-For",
+		"X-Forwarded-Host",
+		"X-Forwarded-Proto",
+		"X-Forwarded-Port",
+		"Forwarded",
+	}
+	for _, name := range names {
+		h.Del(name)
+	}
+}
+
+// rewriteOriginRefererToUpstream 在 preserve_host=false 时，将 Origin、Referer 重写为与上游 Host（target 或 host_header）一致，
+// 与发往上游的 Host 头语义对齐，避免后端仍看到客户端入口域名。
+func rewriteOriginRefererToUpstream(h http.Header, targetURL *url.URL, hostHeader string) {
+	host := targetURL.Host
+	if hostHeader != "" {
+		host = hostHeader
+	}
+	base := targetURL.Scheme + "://" + host
+	h.Set("Origin", base)
+	if ref := h.Get("Referer"); ref != "" {
+		if u, err := url.Parse(ref); err == nil && u.Host != "" {
+			u.Scheme = targetURL.Scheme
+			u.Host = host
+			h.Set("Referer", u.String())
+		}
+	}
+}
+
+// forwardedHeadersApply 将真实 IP / 转发链写入目标 Header（供 HTTP 代理与 WebSocket 拨号共用）
+func forwardedHeadersApply(dst http.Header, priorXFF, remoteAddr, originalHost string, isHTTPS bool) {
+	clientIP := getClientIP(remoteAddr)
+	dst.Set("X-Real-IP", clientIP)
+	if priorXFF != "" {
+		dst.Set("X-Forwarded-For", priorXFF+", "+clientIP)
+	} else {
+		dst.Set("X-Forwarded-For", clientIP)
+	}
+	if dst.Get("X-Forwarded-Host") == "" {
+		dst.Set("X-Forwarded-Host", originalHost)
+	}
+	if dst.Get("X-Forwarded-Proto") == "" {
+		if isHTTPS {
+			dst.Set("X-Forwarded-Proto", "https")
+		} else {
+			dst.Set("X-Forwarded-Proto", "http")
+		}
+	}
+}
+
+// setForwardedHeaders 设置代理转发头，向后端传递真实客户端信息（prior 取自原始请求 origHeader，避免 allow_header_up 去掉 XFF 后无法拼接链）。
+func setForwardedHeaders(req *http.Request, origHeader http.Header, remoteAddr, originalHost string, isHTTPS bool) {
+	prior := origHeader.Get("X-Forwarded-For")
+	forwardedHeadersApply(req.Header, prior, remoteAddr, originalHost, isHTTPS)
 }
 
 // WebSocket upgrader 配置
@@ -816,80 +945,97 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 // handleWebSocketProxy 使用 gorilla/websocket 处理 WebSocket 代理
-func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url.URL) {
-	// 构建后端 WebSocket URL
+func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url.URL, cfg models.ReverseProxyConfig) {
+	originalHost := r.Host
+	originalRemoteAddr := r.RemoteAddr
+	origHeader := r.Header.Clone()
+
+	path := r.URL.Path
+	if cfg.StripPathPrefix != "" && strings.HasPrefix(path, cfg.StripPathPrefix) {
+		path = strings.TrimPrefix(path, cfg.StripPathPrefix)
+		if path == "" {
+			path = "/"
+		}
+	}
+	if cfg.AddPathPrefix != "" {
+		path = cfg.AddPathPrefix + path
+	}
+
+	// 构建后端 WebSocket URL（https 上游一律 wss；http 上游默认 ws，仅 wss 时设 websocket_upstream_tls）
 	backendScheme := "ws"
-	if targetURL.Scheme == "https" {
+	if targetURL.Scheme == "https" || (targetURL.Scheme == "http" && cfg.WebSocketUpstreamTLS) {
 		backendScheme = "wss"
 	}
 	backendURL := url.URL{
 		Scheme:   backendScheme,
 		Host:     targetURL.Host,
-		Path:     r.URL.Path,
+		Path:     path,
 		RawQuery: r.URL.RawQuery,
 	}
 
-	// 准备连接后端的请求头
+	var upstreamHost string
+	if cfg.PreserveHost {
+		upstreamHost = originalHost
+	} else if cfg.HostHeader != "" {
+		upstreamHost = cfg.HostHeader
+	} else {
+		upstreamHost = targetURL.Host
+	}
+
 	requestHeader := http.Header{}
-	// 需要排除的头（hop-by-hop 头 + WebSocket 握手头）
-	excludeHeaders := map[string]bool{
-		"Connection":               true,
-		"Keep-Alive":               true,
-		"Proxy-Authenticate":       true,
-		"Proxy-Authorization":      true,
-		"Te":                       true,
-		"Trailer":                  true,
-		"Transfer-Encoding":        true,
-		"Upgrade":                  true,
-		"Sec-Websocket-Key":        true,
-		"Sec-Websocket-Version":    true,
-		"Sec-Websocket-Extensions": true,
-		"Sec-Websocket-Protocol":   true,
+	copyWSHeadersWithOptionalAllow(requestHeader, r.Header, cfg.AllowHeaderUp)
+	if _, ok := requestHeader["User-Agent"]; !ok {
+		requestHeader.Set("User-Agent", "")
 	}
-	for key, values := range r.Header {
-		if excludeHeaders[key] {
-			continue
-		}
-		// 忽略大小写检查
-		keyLower := strings.ToLower(key)
-		if strings.HasPrefix(keyLower, "sec-websocket") {
-			continue
-		}
-		// 跳过 Origin 头，后面单独处理
-		if keyLower == "origin" {
-			continue
-		}
-		for _, v := range values {
-			requestHeader.Add(key, v)
-		}
+	for _, header := range cfg.HideHeaderUp {
+		requestHeader.Del(header)
 	}
-	// 设置 Host 头为后端地址（某些后端检查 Host）
-	requestHeader.Set("Host", targetURL.Host)
-	// Origin 处理策略：保留原始 Origin 或不设置
-	// 某些后端（如 VS Code Server）会检查 Origin 是否在允许列表中
-	// 如果完全移除 Origin，大多数后端会放行
-	// 这里选择不转发 Origin，让后端认为是直接连接
-	// 添加真实IP转发头
-	clientIP := getClientIP(r.RemoteAddr)
-	requestHeader.Set("X-Real-IP", clientIP)
-	if prior := r.Header.Get("X-Forwarded-For"); prior != "" {
-		requestHeader.Set("X-Forwarded-For", prior+", "+clientIP)
+	if cfg.PreserveHost {
+		if o := r.Header.Get("Origin"); o != "" {
+			requestHeader.Set("Origin", o)
+		}
 	} else {
-		requestHeader.Set("X-Forwarded-For", clientIP)
+		rewriteOriginRefererToUpstream(requestHeader, targetURL, cfg.HostHeader)
 	}
-	requestHeader.Set("X-Forwarded-Host", r.Host)
-	if r.TLS != nil {
-		requestHeader.Set("X-Forwarded-Proto", "https")
-	} else {
-		requestHeader.Set("X-Forwarded-Proto", "http")
+	for key, value := range cfg.HeaderUp {
+		if value == "" {
+			requestHeader.Del(key)
+		} else {
+			value = strings.ReplaceAll(value, "{host}", originalHost)
+			value = strings.ReplaceAll(value, "{remote}", originalRemoteAddr)
+			value = strings.ReplaceAll(value, "{scheme}", targetURL.Scheme)
+			requestHeader.Set(key, value)
+		}
+	}
+
+	requestHeader.Set("Host", upstreamHost)
+
+	if cfg.OmitProxyHeaders {
+		stripProxyIdentityHeaders(requestHeader)
+	} else if cfg.HideRealIP {
+		stripProxyIdentityHeaders(requestHeader)
+	} else if !cfg.TrustProxyHeaders {
+		realAddr := originalRemoteAddr
+		if cfg.ClientIPHeader != "" {
+			if headerVal := origHeader.Get(cfg.ClientIPHeader); headerVal != "" {
+				parts := strings.Split(headerVal, ",")
+				realAddr = strings.TrimSpace(parts[0])
+			}
+		}
+		prior := origHeader.Get("X-Forwarded-For")
+		forwardedHeadersApply(requestHeader, prior, realAddr, originalHost, utils.RequestIsHTTPS(r))
 	}
 
 	// 连接后端 WebSocket
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, // 跳过后端 HTTPS 证书验证
-		},
+		TLSClientConfig:  newUpstreamTLSConfig(),
+	}
+	if cfg.WebSocketReadBuffer > 0 {
+		dialer.ReadBufferSize = cfg.WebSocketReadBuffer
+	}
+	if cfg.WebSocketWriteBuffer > 0 {
+		dialer.WriteBufferSize = cfg.WebSocketWriteBuffer
 	}
 	// 如果原始请求有 subprotocol，传递给后端
 	if protocols := r.Header.Values("Sec-Websocket-Protocol"); len(protocols) > 0 {
@@ -914,8 +1060,15 @@ func handleWebSocketProxy(w http.ResponseWriter, r *http.Request, targetURL *url
 		responseHeader.Set("Sec-WebSocket-Protocol", subprotocol)
 	}
 
-	// 升级客户端连接
-	clientConn, err := wsUpgrader.Upgrade(w, r, responseHeader)
+	// 升级客户端连接（可按服务覆盖缓冲大小）
+	up := wsUpgrader
+	if cfg.WebSocketReadBuffer > 0 {
+		up.ReadBufferSize = cfg.WebSocketReadBuffer
+	}
+	if cfg.WebSocketWriteBuffer > 0 {
+		up.WriteBufferSize = cfg.WebSocketWriteBuffer
+	}
+	clientConn, err := up.Upgrade(w, r, responseHeader)
 	if err != nil {
 		fmt.Printf("WebSocket 客户端升级失败: %v\n", err)
 		return
@@ -1518,7 +1671,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	security.GetAuditLogger().LogOAuthLogin(username, remoteAddr, true, "代理服务OAuth登录成功")
-	utils.SetAuthCookie(w, token, r.TLS != nil, tokenTTL)
+	utils.SetAuthCookie(w, token, utils.RequestIsHTTPS(r), tokenTTL)
 	http.Redirect(w, r, redirectTarget, http.StatusFound)
 }
 

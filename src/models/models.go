@@ -127,9 +127,11 @@ type ReverseProxyConfig struct {
 	HeaderUp          map[string]string `json:"header_up"`          // 添加/修改发送给上游的请求头
 	HeaderDown        map[string]string `json:"header_down"`        // 添加/修改发送给客户端的响应头
 	HideHeaderUp      []string          `json:"hide_header_up"`     // 隐藏发送给上游的请求头
+	AllowHeaderUp     []string          `json:"allow_header_up"`    // 非空时仅允许这些请求头从客户端透传，其余由代理按规则设置
 	HideHeaderDown    []string          `json:"hide_header_down"`   // 隐藏发送给客户端的响应头
 	BufferRequests    bool              `json:"buffer_requests"`    // 缓冲请求体（用于重试）
 	TrustProxyHeaders bool              `json:"trust_proxy_headers"` // 信任上游代理头（X-Forwarded-*）
+	OmitProxyHeaders  bool              `json:"omit_proxy_headers"`  // 为 true 时移除且不添加任何代理/转发相关请求头（见文档优先级）
 
 	// 真实IP控制
 	HideRealIP     bool   `json:"hide_real_ip"`     // 不向后端发送真实IP头（X-Real-IP/X-Forwarded-*），默认false（发送）
@@ -142,6 +144,12 @@ type ReverseProxyConfig struct {
 
 	// 缓存控制
 	CacheMaxAge int `json:"cache_max_age"` // Cache-Control max-age（秒，-1=no-cache，0=不设置，>0=public max-age=N）
+
+	// WebSocket：上游为 http:// 且后端 Socket 仅接受 wss:// 时设为 true；上游为 https:// 时始终连 wss，无需此项
+	WebSocketUpstreamTLS bool `json:"websocket_upstream_tls"`
+	// WebSocket 缓冲（字节），0 表示使用库默认（通常 4096）
+	WebSocketReadBuffer  int `json:"websocket_read_buffer"`
+	WebSocketWriteBuffer int `json:"websocket_write_buffer"`
 }
 
 // StaticConfig 静态文件配置

@@ -4601,10 +4601,15 @@ function getAdvancedConfigDocs(type) {
     if (type === 'reverse_proxy') {
         return `
 <div class="docs-section">
-    <h4>🌐 真实IP控制</h4>
+    <h4>🌐 真实IP与转发头</h4>
+    <div class="docs-item">
+        <code>"omit_proxy_headers": true</code>
+        <p><strong>不附带任何代理/转发信息</strong>：删除请求中已有的 X-Real-IP、X-Forwarded-For、X-Forwarded-Host、X-Forwarded-Proto、X-Forwarded-Port、Forwarded，且<strong>不会</strong>由面板再写入上述头。适用于希望上游完全看不到代理链与客户端 IP 的场景。</p>
+        <p class="docs-note">优先级：<code>omit_proxy_headers</code> 最高；为 true 时忽略 <code>trust_proxy_headers</code> 与 <code>hide_real_ip</code> 的「是否添加转发头」逻辑（三者都会得到「无转发头」的结果）。</p>
+    </div>
     <div class="docs-item">
         <code>"hide_real_ip": true</code>
-        <p>不向后端发送任何真实IP头（X-Real-IP、X-Forwarded-For 等），后端将看不到客户端IP信息</p>
+        <p>不向后端写入真实 IP 转发头，并清除请求里已有的 X-Real-IP、X-Forwarded-*、Forwarded 等与 <code>omit_proxy_headers</code> 相同的代理头集合（区别见上：omit 为最高优先级且语义为「完全不附带代理信息」）。</p>
     </div>
     <div class="docs-item">
         <code>"client_ip_header": "CF-Connecting-IP"</code>
@@ -4612,18 +4617,22 @@ function getAdvancedConfigDocs(type) {
     </div>
     <div class="docs-item">
         <code>"trust_proxy_headers": true</code>
-        <p>信任来自客户端的 X-Forwarded-* 头，不覆盖已有的转发信息（适用于多层代理场景）</p>
+        <p>信任来自客户端的 X-Forwarded-* 头，不覆盖已有的转发信息（适用于多层代理场景）。与 <code>omit_proxy_headers</code> 同时开启时以 <code>omit_proxy_headers</code> 为准。</p>
     </div>
 </div>
 <div class="docs-section">
-    <h4>🔧 Host 头配置</h4>
+    <h4>🔧 Host / Origin / Referer</h4>
     <div class="docs-item">
         <code>"preserve_host": true</code>
-        <p>保留客户端请求的原始 Host 头发送给上游服务器</p>
+        <p>保留客户端请求的原始 Host 发给上游；WebSocket 会透传客户端的 Origin。Referer 随客户端原始请求转发（经路径改写后路径部分仍保留原 Referer 结构）。</p>
+    </div>
+    <div class="docs-item">
+        <code>"preserve_host": false</code>
+        <p><strong>与上游身份对齐</strong>：发往上游的 Host 为上游地址（或下面的 <code>host_header</code>）。同时将 <code>Origin</code> 设为「上游 scheme + 该 Host」，若存在 <code>Referer</code> 则把其中的协议与主机重写为与上游一致，避免后端仍按客户端入口域名校验同源或防盗链。</p>
     </div>
     <div class="docs-item">
         <code>"host_header": "backend.example.com"</code>
-        <p>自定义发送给上游的 Host 头（优先级低于 preserve_host）</p>
+        <p>仅在 <code>preserve_host</code> 为 <strong>false</strong> 时生效：自定义发给上游的 Host；<code>Origin</code> / <code>Referer</code> 重写时也会使用该主机名（端口需写在值内，如 <code>internal:8080</code>）。为 true 时保留客户端 Host，本字段不生效。</p>
     </div>
 </div>
 <div class="docs-section">
@@ -4639,6 +4648,11 @@ function getAdvancedConfigDocs(type) {
 </div>
 <div class="docs-section">
     <h4>📤 请求头配置 (发送给上游)</h4>
+    <div class="docs-item">
+        <code>"allow_header_up": ["Cookie", "Authorization", "Content-Type", "Accept"]</code>
+        <p><strong>请求头白名单</strong>：配置非空数组时，<strong>仅</strong>这些名称的请求头会从客户端请求中保留并发给上游；其余客户端头一律丢弃。随后仍由面板按规则设置 <code>Host</code>（由 <code>preserve_host</code> / <code>host_header</code> 决定，不采用客户端 Host）、<code>Origin</code>/<code>Referer</code>（见上文）、<code>User-Agent</code>（未在白名单且缺失时补空字符串）、以及 <code>X-Forwarded-*</code> / <code>X-Real-IP</code>（受 <code>omit_proxy_headers</code> 等控制）。</p>
+        <p class="docs-note">读取真实 IP 与 XFF 链时仍使用<strong>原始</strong>客户端请求头（故 <code>client_ip_header</code>、入站 <code>X-Forwarded-For</code> 不必写入白名单也会参与计算）。WebSocket 拨号同样适用白名单；逐跳头与 <code>Sec-Webbsocket-*</code> 握手字段永不转发（子协议仍通过面板逻辑传给上游）。<code>hide_header_up</code>、<code>header_up</code> 在白名单之后执行，可再删改。</p>
+    </div>
     <div class="docs-item">
         <code>"header_up": {"X-Custom": "value", "Authorization": "Bearer token"}</code>
         <p>添加或修改发送给上游的请求头。支持变量：{host}=原始Host、{remote}=客户端IP、{scheme}=协议</p>
@@ -4671,7 +4685,7 @@ function getAdvancedConfigDocs(type) {
     </div>
     <div class="docs-item">
         <code>"response_timeout": 120</code>
-        <p>等待后端响应头的超时（秒），覆盖全局默认値（60s）。0 = 使用全局默认</p>
+        <p>等待后端响应头的超时（秒），覆盖全局默认值（60s）。0 = 使用全局默认</p>
     </div>
     <div class="docs-item">
         <code>"buffer_requests": true</code>
@@ -4685,13 +4699,30 @@ function getAdvancedConfigDocs(type) {
         <p>覆盖后端响应的缓存头，设置 Cache-Control: public, max-age=N（秒）。-1 = no-cache，0 = 不设置（保留后端原始头）</p>
     </div>
 </div>
+<div class="docs-section">
+    <h4>🔌 WebSocket</h4>
+    <div class="docs-item">
+        <code>"websocket_upstream_tls": true</code>
+        <p>上游配置为 <code>http://</code> 但 WebSocket 仅接受 <code>wss://</code> 时设为 true；上游为 <code>https://</code> 时面板会始终使用 wss 拨号，一般无需此项。</p>
+    </div>
+    <div class="docs-item">
+        <code>"websocket_read_buffer": 8192</code> / <code>"websocket_write_buffer": 8192</code>
+        <p>客户端升级与上游拨号共用的读写缓冲（字节）。0 或未设置表示使用默认（通常 4096）。大消息或高吞吐时可适当增大。</p>
+    </div>
+</div>
 <div class="docs-section docs-example">
     <h4>📋 完整示例</h4>
     <pre>{
+  "omit_proxy_headers": false,
   "hide_real_ip": false,
   "client_ip_header": "CF-Connecting-IP",
+  "trust_proxy_headers": false,
   "preserve_host": true,
+  "host_header": "",
   "strip_path_prefix": "/api",
+  "websocket_upstream_tls": false,
+  "websocket_read_buffer": 0,
+  "websocket_write_buffer": 0,
   "header_up": {
     "X-Custom-Header": "value"
   },
@@ -4875,12 +4906,18 @@ function getAdvancedConfigDocs(type) {
 function getAdvancedConfigPlaceholder(type) {
     if (type === 'reverse_proxy') {
         return `{
+  "omit_proxy_headers": false,
   "hide_real_ip": false,
+  "trust_proxy_headers": false,
   "client_ip_header": "CF-Connecting-IP",
   "preserve_host": true,
+  "host_header": "",
   "header_up": {"X-Custom": "value"},
   "header_down": {"X-Frame-Options": "DENY"},
   "hide_header_down": ["Server"],
+  "websocket_upstream_tls": false,
+  "websocket_read_buffer": 0,
+  "websocket_write_buffer": 0,
   "max_body_size": 0,
   "flush_interval": 0,
   "response_timeout": 0,

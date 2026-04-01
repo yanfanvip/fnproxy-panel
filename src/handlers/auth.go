@@ -64,7 +64,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	utils.SetAuthCookie(w, tokenString, r.TLS != nil, 24*time.Hour)
+	utils.SetAuthCookie(w, tokenString, utils.RequestIsHTTPS(r), 24*time.Hour)
 
 	resp := LoginResponse{
 		Token: tokenString,
@@ -193,7 +193,7 @@ func AdminOAuthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	security.GetAuditLogger().LogOAuthLogin(username, remoteAddr, true, "管理后台登录成功")
-	utils.SetAuthCookie(w, token, r.TLS != nil, tokenTTL)
+	utils.SetAuthCookie(w, token, utils.RequestIsHTTPS(r), tokenTTL)
 	http.Redirect(w, r, redirectTarget, http.StatusFound)
 }
 
