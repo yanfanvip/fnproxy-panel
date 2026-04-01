@@ -10,10 +10,12 @@ let terminalInstance = null;
 let terminalFitAddon = null;
 let terminalResizeBound = false;
 let terminalFocusBound = false;
+let terminalFullscreenKeysBound = false;
 let terminalSessions = [];
 let sshConnectionsCache = [];
 let usersCache = [];
 let activeTerminalSessionId = null;
+let terminalLineBuffer = ''; // 本地终端行缓冲（Windows PowerShell pipe模式需要前端行编辑）
 let currentModalVariant = 'default';
 let modalHeightFrame = null;
 let authPublicKeyCache = null;
@@ -3358,19 +3360,69 @@ function initTerminalEmulator() {
         terminalResizeBound = true;
     }
 
-    // 阻止 ESC 键在全屏模式下退出全屏（但允许在终端内使用 ESC）
-    if (!terminalFocusBound) {
-        document.addEventListener('keydown', (e) => {
+    // 终端弹窗处于浏览器全屏时：短按 Esc / F11 交给终端；长按（约 550ms）才退出全屏
+    if (!terminalFullscreenKeysBound) {
+        terminalFullscreenKeysBound = true;
+        const LONG_PRESS_MS = 1000;
+        let escHoldStart = null;
+        let f11HoldStart = null;
+
+        document.addEventListener('keydown', e => {
+            const modal = document.getElementById('terminalSessionModal');
+            if (!modal || document.fullscreenElement !== modal) {
+                return;
+            }
             if (e.key === 'Escape') {
-                const modal = document.getElementById('terminalSessionModal');
-                // 只有在终端最大化状态下阻止 ESC 默认行为
-                if (document.fullscreenElement === modal) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // 将 ESC 键传递给终端
-                    if (terminalInstance && ws && ws.readyState === WebSocket.OPEN) {
-                        sendTerminalData('\x1b');
-                    }
+                if (!e.repeat && escHoldStart === null) {
+                    escHoldStart = Date.now();
+                }
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            if (e.key === 'F11') {
+                if (!e.repeat && f11HoldStart === null) {
+                    f11HoldStart = Date.now();
+                }
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        }, true);
+
+        document.addEventListener('keyup', e => {
+            const modal = document.getElementById('terminalSessionModal');
+            if (!modal || document.fullscreenElement !== modal) {
+                return;
+            }
+            if (e.key === 'Escape') {
+                const start = escHoldStart;
+                escHoldStart = null;
+                e.preventDefault();
+                e.stopPropagation();
+                if (start === null) {
+                    return;
+                }
+                const held = Date.now() - start;
+                if (held >= LONG_PRESS_MS) {
+                    document.exitFullscreen().catch(() => {});
+                } else if (terminalInstance && ws && ws.readyState === WebSocket.OPEN) {
+                    sendTerminalData('\x1b');
+                }
+                return;
+            }
+            if (e.key === 'F11') {
+                const start = f11HoldStart;
+                f11HoldStart = null;
+                e.preventDefault();
+                e.stopPropagation();
+                if (start === null) {
+                    return;
+                }
+                const held = Date.now() - start;
+                if (held >= LONG_PRESS_MS) {
+                    document.exitFullscreen().catch(() => {});
+                } else if (terminalInstance && ws && ws.readyState === WebSocket.OPEN) {
+                    sendTerminalData('\x1b[23~');
                 }
             }
         }, true);
@@ -3403,6 +3455,36 @@ function hideTerminalModal() {
     document.getElementById('terminalSessionModal').classList.remove('active');
 }
 
+/**
+ * 终端弹窗全屏时锁定 Esc/F11，避免浏览器先于页面处理并退出全屏。
+ * 需安全上下文（HTTPS 或 localhost）；不支持时由 keydown 捕获与 preventDefault 兜底。
+ * @see https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock
+ */
+function unlockTerminalFullscreenKeyboard() {
+    try {
+        if (navigator.keyboard && typeof navigator.keyboard.unlock === 'function') {
+            navigator.keyboard.unlock();
+        }
+    } catch (e) {
+        /* ignore */
+    }
+}
+
+async function lockTerminalFullscreenKeyboard() {
+    const modal = document.getElementById('terminalSessionModal');
+    if (!modal || document.fullscreenElement !== modal) {
+        return;
+    }
+    if (!navigator.keyboard || typeof navigator.keyboard.lock !== 'function') {
+        return;
+    }
+    try {
+        await navigator.keyboard.lock(['Escape', 'F11']);
+    } catch (e) {
+        /* 无权限、非安全上下文、浏览器不支持等 */
+    }
+}
+
 async function toggleTerminalFullscreen() {
     const modal = document.getElementById('terminalSessionModal');
     if (!modal) {
@@ -3414,6 +3496,8 @@ async function toggleTerminalFullscreen() {
             await document.exitFullscreen();
         } else {
             await modal.requestFullscreen();
+            // 尽量留在用户手势链内再请求锁（部分浏览器更稳）
+            await lockTerminalFullscreenKeyboard();
         }
     } catch (err) {
         showToast('切换全屏失败', 'error');
@@ -3428,8 +3512,13 @@ function handleTerminalFullscreenChange() {
     }
 
     const isFullscreen = document.fullscreenElement === modal;
+    if (isFullscreen) {
+        void lockTerminalFullscreenKeyboard();
+    } else {
+        unlockTerminalFullscreenKeyboard();
+    }
     button.textContent = isFullscreen ? '❐' : '□';
-    button.title = isFullscreen ? '退出全屏' : '最大化';
+    button.title = isFullscreen ? '长按 Esc 或 F11 退出全屏' : '最大化';
 
     window.setTimeout(() => {
         fitTerminalToContainer();
@@ -3439,6 +3528,7 @@ function handleTerminalFullscreenChange() {
 
 function connectTerminalSocket(sessionId) {
     closeTerminalSocket(false);
+    terminalLineBuffer = ''; // 清空本地行缓冲
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${window.location.host}/ws/terminal?session_id=${encodeURIComponent(sessionId)}`);
 
@@ -3519,8 +3609,46 @@ function sendTerminalResize() {
 }
 
 function sendTerminalData(data) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    
+    // 检查是否是本地会话（Windows PowerShell pipe模式需要前端行编辑）
+    const session = getTerminalSession(activeTerminalSessionId);
+    const isLocalSession = session && session.is_local;
+    
+    if (!isLocalSession) {
+        // 远程 SSH 有真正的 PTY，直接发送
         ws.send(JSON.stringify({ type: 'input', data }));
+        return;
+    }
+    
+    // 本地会话：前端接管行编辑
+    for (const char of data) {
+        const code = char.charCodeAt(0);
+        
+        if (code === 0x7f || code === 0x08) {
+            // 退格键：删除缓冲末尾字符 + 视觉删除
+            if (terminalLineBuffer.length > 0) {
+                terminalLineBuffer = terminalLineBuffer.slice(0, -1);
+                terminalInstance.write('\b \b');
+            }
+        } else if (code === 0x0d || code === 0x0a) {
+            // 回车：发送完整命令行
+            ws.send(JSON.stringify({ type: 'input', data: terminalLineBuffer + '\r\n' }));
+            terminalLineBuffer = '';
+            terminalInstance.write('\r\n');
+        } else if (code === 0x03) {
+            // Ctrl+C：清空缓冲并发送
+            terminalLineBuffer = '';
+            ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+            terminalInstance.write('^C\r\n');
+        } else if (code >= 0x20 || code === 0x09) {
+            // 可见字符或 Tab：追加到缓冲 + 回显
+            terminalLineBuffer += char;
+            terminalInstance.write(char);
+        }
+        // 其他控制字符忽略
     }
 }
 
