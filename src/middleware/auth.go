@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"fnproxy/config"
 	"fnproxy/handlers"
 	"fnproxy/utils"
 )
@@ -56,7 +57,21 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 // isPublicPath 检查是否为公开路径
 func isPublicPath(path string) bool {
-	// 登录相关接口始终公开
+	// 如果使用飞牛NAS网关认证，所有路径都需要通过网关认证
+	if config.IsRuntimeOAuthFnnas() {
+		// 仅保留真正公开的接口
+		publicPaths := []string{
+			"/api/geoip",
+		}
+		for _, p := range publicPaths {
+			if path == p {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 传统模式：登录相关接口始终公开
 	publicPaths := []string{
 		"/api/login",
 		"/api/auth/public-key",

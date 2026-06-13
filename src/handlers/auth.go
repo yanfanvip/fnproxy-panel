@@ -36,6 +36,12 @@ type LoginResponse struct {
 
 // LoginHandler 登录处理器
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
+	// 如果使用飞牛NAS网关认证，禁用传统登录
+	if config.IsRuntimeOAuthFnnas() {
+		WriteError(w, http.StatusForbidden, "当前使用飞牛NAS网关认证，不支持传统登录")
+		return
+	}
+
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "Invalid request body")
@@ -95,6 +101,18 @@ func GetCurrentUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 如果使用飞牛NAS网关认证，直接返回 claims 中的信息
+	if config.IsRuntimeOAuthFnnas() {
+		WriteSuccess(w, map[string]interface{}{
+			"username": claims.Username,
+			"email":    "",
+			"enabled":  true,
+			"role":     claims.Role,
+		})
+		return
+	}
+
+	// 传统模式：从数据库中获取用户信息
 	user := config.GetManager().GetUserByUsername(claims.Username)
 	if user == nil {
 		WriteError(w, http.StatusNotFound, "User not found")
@@ -123,6 +141,12 @@ type adminOAuthLoginPayload struct {
 
 // AdminOAuthHandler 管理后台OAuth登录处理
 func AdminOAuthHandler(w http.ResponseWriter, r *http.Request) {
+	// 如果使用飞牛NAS网关认证，禁用本地登录页面
+	if config.IsRuntimeOAuthFnnas() {
+		WriteError(w, http.StatusForbidden, "当前使用飞牛NAS网关认证，请使用飞牛NAS登录")
+		return
+	}
+
 	remoteAddr := r.RemoteAddr
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		remoteAddr = strings.Split(xff, ",")[0]
@@ -253,7 +277,20 @@ func renderAdminOAuthLoginPage(w http.ResponseWriter, r *http.Request, errMsg st
 // AdminPageAuthMiddleware 管理后台页面认证中间件
 func AdminPageAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 检查是否已登录
+		// 如果使用飞牛NAS网关认证，不需要重定向到登录页
+		if config.IsRuntimeOAuthFnnas() {
+			// 飞牛NAS模式下，由 FnnasGatewayAuthMiddleware 处理认证
+			// 这里只需要检查是否已经有 claims
+			if claims, _ := utils.GetAuthClaimsFromRequest(r); claims != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// 如果没有认证信息，返回401（网关应该已经拦截了）
+			WriteError(w, http.StatusUnauthorized, "未认证")
+			return
+		}
+
+		// 传统模式：检查是否已登录
 		if claims, _ := utils.GetAuthClaimsFromRequest(r); claims != nil {
 			next.ServeHTTP(w, r)
 			return

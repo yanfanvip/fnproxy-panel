@@ -20,11 +20,13 @@ const (
 )
 
 var (
-	runtimeBaseDir   string
-	runtimeBaseDirMu sync.RWMutex
-	runtimeAdminPort int
-	runtimeUseSocket bool
-	runtimeAdminMu   sync.RWMutex
+	runtimeBaseDir     string
+	runtimeBaseDirMu   sync.RWMutex
+	runtimeAdminPort   int
+	runtimeUseSocket   bool
+	runtimeSocketPath  string
+	runtimeOAuthMode   string
+	runtimeAdminMu     sync.RWMutex
 )
 
 func SetRuntimeBaseDir(path string) error {
@@ -90,6 +92,15 @@ func RuntimePIDFilePath() string {
 }
 
 func RuntimeSocketFilePath() string {
+	runtimeAdminMu.RLock()
+	defer runtimeAdminMu.RUnlock()
+	
+	// 如果设置了自定义 socket 路径，优先使用
+	if runtimeSocketPath != "" {
+		return runtimeSocketPath
+	}
+	
+	// 否则使用默认路径
 	return ResolveRuntimePath(socketFileName)
 }
 
@@ -133,6 +144,42 @@ func SetRuntimeAdminTarget(portArg string, defaultPort int) error {
 	runtimeUseSocket = false
 	runtimeAdminPort = port
 	return nil
+}
+
+// SetRuntimeSocketPath 设置自定义 socket 文件路径
+func SetRuntimeSocketPath(path string) {
+	runtimeAdminMu.Lock()
+	defer runtimeAdminMu.Unlock()
+	path = strings.TrimSpace(path)
+	if path != "" {
+		// 如果提供了绝对路径，直接使用；否则相对于运行目录
+		if filepath.IsAbs(path) {
+			runtimeSocketPath = path
+		} else {
+			runtimeSocketPath = filepath.Join(GetRuntimeBaseDir(), filepath.FromSlash(path))
+		}
+	} else {
+		runtimeSocketPath = ""
+	}
+}
+
+// SetRuntimeOAuthMode 设置 OAuth 认证模式
+func SetRuntimeOAuthMode(mode string) {
+	runtimeAdminMu.Lock()
+	defer runtimeAdminMu.Unlock()
+	runtimeOAuthMode = strings.ToLower(strings.TrimSpace(mode))
+}
+
+// GetRuntimeOAuthMode 获取 OAuth 认证模式
+func GetRuntimeOAuthMode() string {
+	runtimeAdminMu.RLock()
+	defer runtimeAdminMu.RUnlock()
+	return runtimeOAuthMode
+}
+
+// IsRuntimeOAuthFnnas 检查是否使用飞牛NAS网关认证
+func IsRuntimeOAuthFnnas() bool {
+	return GetRuntimeOAuthMode() == "fnnas"
 }
 
 func IsRuntimeAdminSocket() bool {

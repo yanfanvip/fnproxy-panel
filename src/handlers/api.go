@@ -104,6 +104,16 @@ func WriteError(w http.ResponseWriter, status int, message string) {
 	WriteJSON(w, status, Response{Success: false, Error: message})
 }
 
+// WriteErrorWithDetail 写入带详细信息的错误响应
+func WriteErrorWithDetail(w http.ResponseWriter, status int, message string, detail interface{}) {
+	resp := Response{
+		Success: false,
+		Error:   message,
+		Data:    detail,
+	}
+	WriteJSON(w, status, resp)
+}
+
 // WriteSuccess 写入成功响应
 func WriteSuccess(w http.ResponseWriter, data interface{}) {
 	WriteJSON(w, http.StatusOK, Response{Success: true, Data: data})
@@ -115,9 +125,16 @@ func WriteSuccessWithMessage(w http.ResponseWriter, data interface{}, message st
 
 // getRequestContext 获取请求上下文（用户名和IP）
 func getRequestContext(r *http.Request) (username, remoteAddr string) {
+	// 优先从 Claims 中获取用户名
 	if claims, _ := utils.GetAuthClaimsFromRequest(r); claims != nil {
 		username = claims.Username
 	}
+	
+	// 如果是飞牛NAS模式，从 Header 中获取用户名
+	if username == "" {
+		username = r.Header.Get("X-Trim-Username")
+	}
+	
 	remoteAddr = r.RemoteAddr
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")

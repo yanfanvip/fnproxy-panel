@@ -26,11 +26,15 @@ func main() {
 	secureArg := flag.String("secure", "", "用于密码加密与 OAuth 解密的安全参数")
 	configPathArg := flag.String("config_path", "", "用于设置配置/缓存/证书/PID 文件保存目录")
 	portArg := flag.String("port", "", "设置管理端口；传数字表示 TCP 端口，传 sock 表示使用 Unix Socket")
+	socketPathArg := flag.String("socketpath", "", "设置 Unix Socket 文件路径（仅在 -port=sock 时生效）")
+	oauthArg := flag.String("oauth", "", "OAuth 认证模式：fnnas 表示使用飞牛NAS网关认证")
 	flag.Parse()
 	actionValue := strings.TrimSpace(*actionArg)
 	secureValue := strings.TrimSpace(*secureArg)
 	configPathValue := strings.TrimSpace(*configPathArg)
 	portValue := strings.TrimSpace(*portArg)
+	socketPathValue := strings.TrimSpace(*socketPathArg)
+	oauthValue := strings.TrimSpace(*oauthArg)
 
 	if err := config.SetRuntimeBaseDir(configPathValue); err != nil {
 		fmt.Printf("初始化运行目录失败: %v\n", err)
@@ -83,6 +87,17 @@ func main() {
 	if err := config.SetRuntimeAdminTarget(portValue, cfg.GetConfig().Global.AdminPort); err != nil {
 		fmt.Printf("初始化管理端监听参数失败: %v\n", err)
 		os.Exit(1)
+	}
+	
+	// 设置自定义 socket 路径（如果提供）
+	if socketPathValue != "" {
+		config.SetRuntimeSocketPath(socketPathValue)
+	}
+	
+	// 设置 OAuth 认证模式
+	if oauthValue != "" {
+		config.SetRuntimeOAuthMode(oauthValue)
+		fmt.Printf("OAuth 认证模式：%s\n", oauthValue)
 	}
 	fmt.Println("服务管理启动中...")
 	fmt.Println("启动参数提示：可通过 -secure=\"你的密钥\" 指定密码加密与 OAuth 解密安全参数。")
@@ -453,9 +468,16 @@ func main() {
 	// WebSocket终端
 	apiMux.HandleFunc("/ws/terminal", handlers.TerminalHandler)
 
-	// 应用中间件
+	// 应用中间件（根据 OAuth 模式选择不同的认证方式）
 	var handler http.Handler = apiMux
-	handler = middleware.AuthMiddleware(handler)
+	if config.IsRuntimeOAuthFnnas() {
+		// 使用飞牛NAS网关认证
+		handler = middleware.FnnasGatewayAuthMiddleware(handler)
+		fmt.Println("使用飞牛NAS网关认证模式")
+	} else {
+		// 使用传统的 JWT 认证
+		handler = middleware.AuthMiddleware(handler)
+	}
 	handler = middleware.CORSMiddleware(handler)
 	handler = middleware.LoggingMiddleware(handler)
 
