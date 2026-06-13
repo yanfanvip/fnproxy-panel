@@ -31,7 +31,20 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		// 获取Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			handlers.WriteError(w, http.StatusUnauthorized, "Authorization header required")
+			// 判断是否为API请求
+			if isAPIRequest(r) {
+				// API请求返回JSON错误
+				handlers.WriteError(w, http.StatusUnauthorized, "Authorization header required")
+			} else {
+				// 页面请求重定向到登录页
+				webRoot := config.GetRuntimeWebRoot()
+				loginPath := "/admin-oauth"
+				if webRoot != "" && webRoot != "/" {
+					loginPath = webRoot + loginPath
+				}
+				redirectURL := loginPath + "?redirect=" + r.URL.RequestURI()
+				http.Redirect(w, r, redirectURL, http.StatusFound)
+			}
 			return
 		}
 
@@ -75,6 +88,7 @@ func isPublicPath(path string) bool {
 
 	// 传统模式：登录相关接口始终公开
 	publicPaths := []string{
+		"/admin-oauth",      // OAuth登录页面
 		"/api/login",
 		"/api/auth/public-key",
 		"/api/logout",
@@ -87,6 +101,26 @@ func isPublicPath(path string) bool {
 	}
 	// 其他路径根据全局认证设置决定是否公开
 	// 当 DefaultAuth=true 时，非公开路径需要认证
+	return false
+}
+
+// isAPIRequest 判断是否为API请求
+func isAPIRequest(r *http.Request) bool {
+	path := r.URL.Path
+	// API请求：以 /api/ 或 /ws/ 开头
+	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws/") {
+		return true
+	}
+	// WebSocket升级请求
+	if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+		return true
+	}
+	// JSON请求（通过Accept或Content-Type判断）
+	accept := r.Header.Get("Accept")
+	contentType := r.Header.Get("Content-Type")
+	if strings.Contains(accept, "application/json") || strings.Contains(contentType, "application/json") {
+		return true
+	}
 	return false
 }
 
