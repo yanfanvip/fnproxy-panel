@@ -26,6 +26,7 @@ var (
 	runtimeUseSocket   bool
 	runtimeSocketPath  string
 	runtimeOAuthMode   string
+	runtimeWebRoot     string
 	runtimeAdminMu     sync.RWMutex
 )
 
@@ -180,6 +181,28 @@ func GetRuntimeOAuthMode() string {
 // IsRuntimeOAuthFnnas 检查是否使用飞牛NAS网关认证
 func IsRuntimeOAuthFnnas() bool {
 	return GetRuntimeOAuthMode() == "fnnas"
+}
+
+// SetRuntimeWebRoot 设置 Web 根路径前缀
+func SetRuntimeWebRoot(webRoot string) {
+	runtimeAdminMu.Lock()
+	defer runtimeAdminMu.Unlock()
+	webRoot = strings.TrimSpace(webRoot)
+	// 确保以 / 开头，不以 / 结尾
+	if webRoot != "" {
+		if !strings.HasPrefix(webRoot, "/") {
+			webRoot = "/" + webRoot
+		}
+		webRoot = strings.TrimSuffix(webRoot, "/")
+	}
+	runtimeWebRoot = webRoot
+}
+
+// GetRuntimeWebRoot 获取 Web 根路径前缀
+func GetRuntimeWebRoot() string {
+	runtimeAdminMu.RLock()
+	defer runtimeAdminMu.RUnlock()
+	return runtimeWebRoot
 }
 
 func IsRuntimeAdminSocket() bool {

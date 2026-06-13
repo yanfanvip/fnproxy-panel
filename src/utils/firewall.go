@@ -68,6 +68,7 @@ func firewallDropConnection(w http.ResponseWriter) {
 }
 
 func firewallGetClientIP(r *http.Request) string {
+	// 优先从 Header 中获取
 	xff := r.Header.Get("X-Forwarded-For")
 	if xff != "" {
 		ips := firewallSplitIPs(xff)
@@ -79,9 +80,22 @@ func firewallGetClientIP(r *http.Request) string {
 	if xri != "" {
 		return xri
 	}
+	
+	// 处理 RemoteAddr
+	// Unix Socket 连接的 RemoteAddr 可能是 "@" 或空字符串
+	if r.RemoteAddr == "" || r.RemoteAddr == "@" {
+		// Unix Socket 连接，视为本地连接
+		return "127.0.0.1"
+	}
+	
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		// 如果无法解析，检查是否是有效的 IP
+		if net.ParseIP(r.RemoteAddr) != nil {
+			return r.RemoteAddr
+		}
+		// 否则视为本地连接（Unix Socket）
+		return "127.0.0.1"
 	}
 	return ip
 }

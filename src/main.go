@@ -17,6 +17,7 @@ import (
 	"fnproxy/fnproxy"
 	"fnproxy/handlers"
 	"fnproxy/middleware"
+	"fnproxy/routes"
 	"fnproxy/security"
 	"fnproxy/utils"
 )
@@ -28,6 +29,7 @@ func main() {
 	portArg := flag.String("port", "", "设置管理端口；传数字表示 TCP 端口，传 sock 表示使用 Unix Socket")
 	socketPathArg := flag.String("socketpath", "", "设置 Unix Socket 文件路径（仅在 -port=sock 时生效）")
 	oauthArg := flag.String("oauth", "", "OAuth 认证模式：fnnas 表示使用飞牛NAS网关认证")
+	webRootArg := flag.String("webroot", "", "Web 根路径前缀，例如 /app/fnproxy（所有路由将此前缀）")
 	flag.Parse()
 	actionValue := strings.TrimSpace(*actionArg)
 	secureValue := strings.TrimSpace(*secureArg)
@@ -35,6 +37,7 @@ func main() {
 	portValue := strings.TrimSpace(*portArg)
 	socketPathValue := strings.TrimSpace(*socketPathArg)
 	oauthValue := strings.TrimSpace(*oauthArg)
+	webRootValue := strings.TrimSpace(*webRootArg)
 
 	if err := config.SetRuntimeBaseDir(configPathValue); err != nil {
 		fmt.Printf("初始化运行目录失败: %v\n", err)
@@ -99,6 +102,13 @@ func main() {
 		config.SetRuntimeOAuthMode(oauthValue)
 		fmt.Printf("OAuth 认证模式：%s\n", oauthValue)
 	}
+	
+	// 设置 Web 根路径
+	if webRootValue != "" {
+		config.SetRuntimeWebRoot(webRootValue)
+		fmt.Printf("Web 根路径：%s\n", webRootValue)
+	}
+	
 	fmt.Println("服务管理启动中...")
 	fmt.Println("启动参数提示：可通过 -secure=\"你的密钥\" 指定密码加密与 OAuth 解密安全参数。")
 	fmt.Printf("运行目录：%s\n", config.GetRuntimeBaseDir())
@@ -123,17 +133,29 @@ func main() {
 	utils.GetMonitor()
 	certManager := utils.GetCertificateManager()
 
+	// 获取 WebRoot 用于路由构建
+	webRoot := config.GetRuntimeWebRoot()
+	
+	// 辅助函数：构建带WebRoot的路由
+	buildRoute := func(route string) string {
+		return routes.BuildRoute(webRoot, route)
+	}
+	
 	// 设置HTTP路由
 	mux := http.NewServeMux()
 
 	// 管理后台OAuth登录页面（公开路径）
-	mux.HandleFunc("/admin-oauth", handlers.AdminOAuthHandler)
+	mux.HandleFunc(buildRoute(routes.RouteAdminOAuth), handlers.AdminOAuthHandler)
 
-	// 静态文件服务（已内嵌到可执行文件）需要认证
+	// 静态文件服务（已内嵌到可执行文件）
 	staticHandler := newStaticFileServer()
-	protectedStaticHandler := handlers.AdminPageAuthMiddleware(staticHandler)
-	mux.Handle("/", protectedStaticHandler)
-	mux.Handle("/static/", http.StripPrefix("/static/", protectedStaticHandler))
+	// 注入 WebRoot 到 HTML 中
+	injectedStaticHandler := injectWebRootMiddleware(staticHandler)
+	// 注意：认证已在全局中间件中处理，这里不需要 AdminPageAuthMiddleware
+	// 根路径：需要StripPrefix去掉WebRoot前缀，让FileServer看到/
+	mux.Handle(buildRoute(routes.RouteRoot), http.StripPrefix(buildRoute(routes.RouteRoot), injectedStaticHandler))
+	// 静态资源路径：也需要StripPrefix
+	mux.Handle(buildRoute(routes.RouteStatic), http.StripPrefix(buildRoute(routes.RouteStatic), injectedStaticHandler))
 
 	// API路由
 	apiMux := http.NewServeMux()
@@ -468,26 +490,28 @@ func main() {
 	// WebSocket终端
 	apiMux.HandleFunc("/ws/terminal", handlers.TerminalHandler)
 
-	// 应用中间件（根据 OAuth 模式选择不同的认证方式）
-	var handler http.Handler = apiMux
+	// 挂载API和WebSocket路由
+	// 注意：apiMux 内部路由已包含 /api/ 和 /ws/ 前缀，所以只 StripPrefix WebRoot
+	mux.Handle(buildRoute(routes.RouteAPIPrefix), http.StripPrefix(webRoot, apiMux))
+	mux.Handle(buildRoute(routes.RouteWSPrefix), http.StripPrefix(webRoot, apiMux))
+
+	// 应用全局认证中间件（根据 OAuth 模式选择不同的认证方式）
+	var globalHandler http.Handler = mux
 	if config.IsRuntimeOAuthFnnas() {
-		// 使用飞牛NAS网关认证
-		handler = middleware.FnnasGatewayAuthMiddleware(handler)
+		// 使用飞牛NAS网关认证（应用到所有路由，包括静态文件）
+		globalHandler = middleware.FnnasGatewayAuthMiddleware(globalHandler)
 		fmt.Println("使用飞牛NAS网关认证模式")
 	} else {
 		// 使用传统的 JWT 认证
-		handler = middleware.AuthMiddleware(handler)
+		globalHandler = middleware.AuthMiddleware(globalHandler)
 	}
-	handler = middleware.CORSMiddleware(handler)
-	handler = middleware.LoggingMiddleware(handler)
-
-	// 挂载API路由
-	mux.Handle("/api/", handler)
-	mux.Handle("/ws/", handler)
+	globalHandler = middleware.CORSMiddleware(globalHandler)
 
 	// 创建HTTP服务器（防火墙优先级最高，覆盖所有路由）
+	// 在防火墙之后添加通用请求日志中间件，记录所有请求
 	adminPort := config.GetRuntimeAdminPort(cfg.GetConfig().Global.AdminPort)
-	server := &http.Server{Handler: middleware.FirewallMiddleware(mux)}
+	loggedHandler := middleware.RequestLoggingMiddleware(globalHandler)
+	server := &http.Server{Handler: middleware.FirewallMiddleware(loggedHandler)}
 	var (
 		adminListener net.Listener
 		listenErr     error

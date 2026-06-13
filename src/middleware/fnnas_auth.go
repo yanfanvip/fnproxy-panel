@@ -60,10 +60,6 @@ func FnnasGatewayAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 记录认证成功日志
-		fmt.Printf("[飞牛NAS认证成功] IP=%s 用户=%s UID=%s 管理员=%s 路径=%s\n",
-			remoteAddr, username, userID, isAdmin, r.URL.Path)
-
 		// 管理端仅允许管理员访问
 		if isAdmin != "true" {
 			errorMsg := fmt.Sprintf("用户 %s (UID:%s) 不是管理员，Isadmin=%s", username, userID, isAdmin)

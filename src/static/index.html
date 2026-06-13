@@ -2706,6 +2706,11 @@
         #adminSubmitBtn{ width: 100%;}
     </style>
     <link rel="stylesheet" href="vendor/xterm.css">
+    <!-- WebRoot 配置，由后端模板渲染时注入 -->
+    <script>
+        // 从 window.WEB_ROOT 获取 WebRoot，默认为空字符串
+        window.WEB_ROOT = '';
+    </script>
 </head>
 <body>
     <!-- 主应用 -->

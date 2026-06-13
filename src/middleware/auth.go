@@ -62,6 +62,8 @@ func isPublicPath(path string) bool {
 		// 仅保留真正公开的接口
 		publicPaths := []string{
 			"/api/geoip",
+			"/api/status",  // 状态接口公开，用于健康检查
+			"/ws/terminal",  // WebSocket终端：浏览器无法设置自定义Header，需要在握手后验证
 		}
 		for _, p := range publicPaths {
 			if path == p {

@@ -15,6 +15,7 @@ import (
 	"fnproxy/config"
 	"fnproxy/fnproxy"
 	"fnproxy/pkg/oauth"
+	"fnproxy/routes"
 	"fnproxy/security"
 	"fnproxy/utils"
 )
@@ -156,7 +157,7 @@ func AdminOAuthHandler(w http.ResponseWriter, r *http.Request) {
 	if claims, _ := utils.GetAuthClaimsFromRequest(r); claims != nil {
 		redirect := r.URL.Query().Get("redirect")
 		if redirect == "" {
-			redirect = "/"
+			redirect = routes.BuildRoute(config.GetRuntimeWebRoot(), routes.RouteRoot)
 		}
 		http.Redirect(w, r, redirect, http.StatusFound)
 		return
@@ -184,8 +185,10 @@ func AdminOAuthHandler(w http.ResponseWriter, r *http.Request) {
 	username := strings.TrimSpace(payload.Username)
 	password := payload.Password
 	redirectTarget := r.FormValue("redirect")
+	webRoot := config.GetRuntimeWebRoot()
+	
 	if redirectTarget == "" {
-		redirectTarget = "/"
+		redirectTarget = routes.BuildRoute(webRoot, routes.RouteRoot)
 	}
 
 	user := config.GetManager().GetUserByUsername(username)
@@ -270,6 +273,12 @@ func renderAdminOAuthLoginPage(w http.ResponseWriter, r *http.Request, errMsg st
 	if redirectTarget == "" {
 		redirectTarget = r.FormValue("redirect")
 	}
+	webRoot := config.GetRuntimeWebRoot()
+	
+	if redirectTarget == "" {
+		redirectTarget = routes.BuildRoute(webRoot, routes.RouteRoot)
+	}
+	
 	publicKeyPEM := fnproxy.GetServer().GetOAuthPublicKeyPEM()
 	oauth.RenderLoginPage(w, redirectTarget, errMsg, publicKeyPEM)
 }
@@ -296,7 +305,9 @@ func AdminPageAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		// 未登录，重定向到登录页面
-		redirectURL := fmt.Sprintf("/admin-oauth?redirect=%s", url.QueryEscape(r.URL.RequestURI()))
+		webRoot := config.GetRuntimeWebRoot()
+		loginPath := routes.BuildRoute(webRoot, routes.RouteAdminOAuth)
+		redirectURL := loginPath + "?redirect=" + url.QueryEscape(r.URL.RequestURI())
 		http.Redirect(w, r, redirectURL, http.StatusFound)
 	})
 }

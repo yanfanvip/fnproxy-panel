@@ -1,6 +1,8 @@
 // fnproxy Panel Frontend JavaScript
 
-const API_BASE = '/api';
+// API 基础路径，从 window.WEB_ROOT 获取
+const WEB_ROOT = window.WEB_ROOT || '';
+const API_BASE = WEB_ROOT + '/api';
 let currentToken = localStorage.getItem('token');
 let currentUser = JSON.parse(localStorage.getItem('user') || '{}');
 let ws = null;
@@ -3530,7 +3532,8 @@ function connectTerminalSocket(sessionId) {
     closeTerminalSocket(false);
     terminalLineBuffer = ''; // 清空本地行缓冲
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${window.location.host}/ws/terminal?session_id=${encodeURIComponent(sessionId)}`);
+    const wsPath = WEB_ROOT + '/ws/terminal';
+    ws = new WebSocket(`${protocol}//${window.location.host}${wsPath}?session_id=${encodeURIComponent(sessionId)}`);
 
     ws.onopen = () => {
         updateTerminalStatus(true);
