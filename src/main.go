@@ -507,6 +507,9 @@ func main() {
 	}
 	globalHandler = middleware.CORSMiddleware(globalHandler)
 
+	// 添加请求体大小限制中间件（10MB）
+	globalHandler = requestBodySizeMiddleware(globalHandler, 10*1024*1024)
+
 	// 创建HTTP服务器（防火墙优先级最高，覆盖所有路由）
 	// 在防火墙之后添加通用请求日志中间件，记录所有请求
 	adminPort := config.GetRuntimeAdminPort(cfg.GetConfig().Global.AdminPort)
@@ -592,4 +595,21 @@ func main() {
 	}
 
 	fmt.Println("服务器已关闭")
+}
+
+// requestBodySizeMiddleware 限制请求体大小的中间件
+func requestBodySizeMiddleware(next http.Handler, maxSize int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 仅对 POST/PUT/PATCH 等可能有请求体的方法进行检查
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+			// 检查 Content-Length
+			if r.ContentLength > maxSize {
+				handlers.WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("请求体过大，最大允许 %d MB", maxSize/1024/1024))
+				return
+			}
+			// 使用 MaxBytesReader 限制实际读取的字节数
+			r.Body = http.MaxBytesReader(w, r.Body, maxSize)
+		}
+		next.ServeHTTP(w, r)
+	})
 }

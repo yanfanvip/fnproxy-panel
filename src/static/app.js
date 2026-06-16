@@ -488,6 +488,7 @@ function createServiceDraft(service = null) {
         enabled: service?.enabled !== false,
         http2: service?.http2 || false,
         http3: service?.http3 || false,
+        allowed_users: service?.allowed_users || [],
         config: createServiceConfigDefaults(type, config),
         advancedText: service?.extend_json || getAdvancedConfigText(type, config)
     };
@@ -4220,6 +4221,11 @@ function handleServiceBrowseToggle() {
     renderServiceConfigForm();
 }
 
+function handleServiceOAuthToggle() {
+    captureServiceForm();
+    renderServiceConfigForm();
+}
+
 function handleDefaultServiceBrowseToggle() {
     captureDefaultServiceForm();
     renderDefaultServiceConfig();
@@ -4233,6 +4239,8 @@ function captureServiceForm() {
     currentServiceDraft.domain = document.getElementById('serviceDomain')?.value?.trim() || '';
     currentServiceDraft.certificate_id = '';
     currentServiceDraft.enabled = !!document.getElementById('serviceEnabled')?.checked;
+    
+    // allowed_users 已经在 showUserSelectionDialog 中更新，这里不需要再捕获
 
     const nextConfig = createServiceConfigDefaults(currentServiceDraft.type, currentServiceDraft.config);
     switch (currentServiceDraft.type) {
@@ -4359,8 +4367,32 @@ function renderServiceConfigForm() {
 
     html += `
         <div class="form-group">
-            ${checkboxLabelWithHint('开启OAuth认证', '访问该服务前需要先通过登录校验', 'configOAuth', !!cfg.oauth)}
+            ${checkboxLabelWithHint('开启OAuth认证', '访问该服务前需要先通过登录校验', 'configOAuth', !!cfg.oauth, 'onchange="handleServiceOAuthToggle()"')}
         </div>
+    `;
+
+    // 只在定制模式且开启 OAuth 时显示用户选择（放在 OAuth 下方，日志上方）
+    if (isAdvanced && cfg.oauth) {
+        html += `
+            <div class="form-group">
+                ${labelWithHint('允许访问的用户', '留空表示所有用户都可以访问')} 
+                <div id="serviceAllowedUsersSelect" class="antd-select-wrapper" style="position: relative;">
+                    <div id="serviceAllowedUsersTrigger" class="antd-select-trigger" style="min-height: 38px; padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: white; cursor: pointer; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; transition: all 0.3s;">
+                        <span id="serviceAllowedUsersPlaceholder" style="color: #bfbfbf;">点击选择用户...</span>
+                    </div>
+                    <div id="serviceAllowedUsersDropdown" class="antd-select-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; background: white; border: 1px solid #d9d9d9; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 1000; max-height: 250px; overflow-y: auto;">
+                        <div style="padding: 8px; border-bottom: 1px solid #f0f0f0;">
+                            <input type="text" id="serviceAllowedUsersSearch" placeholder="搜索用户..." style="width: 100%; padding: 6px 10px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 14px; outline: none;">
+                        </div>
+                        <div id="serviceAllowedUsersList"></div>
+                    </div>
+                </div>
+                <small style="color: #64748b; font-size: 12px;">提示：不选择任何用户时，所有系统用户都可以访问此服务</small>
+            </div>
+        `;
+    }
+
+    html += `
         <div class="form-group">
             ${checkboxLabelWithHint('记录访问日志', '记录该服务的访问日志到后台', 'configAccessLog', cfg.access_log !== false)}
         </div>
@@ -4383,6 +4415,166 @@ function renderServiceConfigForm() {
 
     container.innerHTML = html;
     scheduleModalHeightUpdate();
+    
+    // 如果显示了用户选择框，异步加载用户列表
+    if (isAdvanced && cfg.oauth) {
+        loadUserSelectOptions();
+    }
+}
+
+// 加载用户选择框选项
+async function loadUserSelectOptions() {
+    try {
+        const data = await apiRequest('/users');
+        if (!data.success || !data.data) return;
+        
+        const trigger = document.getElementById('serviceAllowedUsersTrigger');
+        const dropdown = document.getElementById('serviceAllowedUsersDropdown');
+        const searchInput = document.getElementById('serviceAllowedUsersSearch');
+        const userList = document.getElementById('serviceAllowedUsersList');
+        
+        if (!trigger || !dropdown || !searchInput || !userList) return;
+        
+        // 存储所有用户数据
+        window._allUsersForService = data.data.filter(u => u.enabled);
+        
+        // 渲染已选中的用户标签
+        renderAntdSelectTags();
+        
+        // 点击触发器显示/隐藏下拉框
+        trigger.onclick = (e) => {
+            e.stopPropagation();
+            const isVisible = dropdown.style.display !== 'none';
+            dropdown.style.display = isVisible ? 'none' : 'block';
+            trigger.style.borderColor = isVisible ? '#d9d9d9' : '#40a9ff';
+            trigger.style.boxShadow = isVisible ? 'none' : '0 0 0 2px rgba(24,144,255,0.2)';
+            
+            if (!isVisible) {
+                // 显示时聚焦搜索框
+                setTimeout(() => searchInput.focus(), 100);
+                // 渲染用户列表
+                renderUserList(window._allUsersForService);
+            }
+        };
+        
+        // 搜索功能
+        searchInput.oninput = (e) => {
+            const keyword = e.target.value.toLowerCase();
+            const filtered = window._allUsersForService.filter(u => 
+                u.username.toLowerCase().includes(keyword) || 
+                u.role.toLowerCase().includes(keyword)
+            );
+            renderUserList(filtered);
+        };
+        
+        // 点击外部关闭下拉框
+        document.addEventListener('click', function closeHandler(e) {
+            if (!dropdown.contains(e.target) && !trigger.contains(e.target)) {
+                dropdown.style.display = 'none';
+                trigger.style.borderColor = '#d9d9d9';
+                trigger.style.boxShadow = 'none';
+                document.removeEventListener('click', closeHandler);
+            }
+        });
+    } catch (err) {
+        console.error('加载用户列表失败:', err);
+    }
+}
+
+// 渲染 Antd 风格的 Tag
+function renderAntdSelectTags() {
+    const trigger = document.getElementById('serviceAllowedUsersTrigger');
+    const placeholder = document.getElementById('serviceAllowedUsersPlaceholder');
+    
+    if (!trigger || !placeholder) return;
+    
+    // 清除旧的标签（保留 placeholder）
+    const oldTags = trigger.querySelectorAll('.antd-select-tag');
+    oldTags.forEach(tag => tag.remove());
+    
+    if (!currentServiceDraft.allowed_users || currentServiceDraft.allowed_users.length === 0) {
+        placeholder.style.display = 'inline';
+        return;
+    }
+    
+    placeholder.style.display = 'none';
+    
+    currentServiceDraft.allowed_users.forEach(username => {
+        const user = window._allUsersForService?.find(u => u.username === username);
+        const displayName = user ? `${username} (${user.role})` : username;
+        
+        const tag = document.createElement('span');
+        tag.className = 'antd-select-tag';
+        tag.style.cssText = 'display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: #f5f5f5; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 13px; color: #333; max-width: 150px;';
+        tag.innerHTML = `
+            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${displayName}</span>
+            <span onclick="event.stopPropagation(); removeAntdUserTag('${username}')" style="cursor: pointer; color: #999; font-size: 16px; line-height: 1; margin-left: 4px;">&times;</span>
+        `;
+        trigger.insertBefore(tag, placeholder);
+    });
+}
+
+// 移除 Antd 风格的用户标签
+function removeAntdUserTag(username) {
+    currentServiceDraft.allowed_users = currentServiceDraft.allowed_users.filter(u => u !== username);
+    renderAntdSelectTags();
+}
+
+// 渲染用户列表
+function renderUserList(users) {
+    const userList = document.getElementById('serviceAllowedUsersList');
+    if (!userList) return;
+    
+    if (users.length === 0) {
+        userList.innerHTML = '<div style="padding: 12px; text-align: center; color: #999;">未找到匹配的用户</div>';
+        return;
+    }
+    
+    userList.innerHTML = users.map(user => {
+        const isSelected = currentServiceDraft.allowed_users && currentServiceDraft.allowed_users.includes(user.username);
+        return `
+            <div class="antd-select-option" data-username="${user.username}" 
+                 style="padding: 8px 12px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: background 0.2s;"
+                 onmouseover="this.style.background='#f5f5f5'" 
+                 onmouseout="this.style.background='transparent'"
+                 onclick="toggleAntdUserSelection('${user.username}', event)">
+                <span style="font-size: 14px; color: #333;">${user.username} <small style="color: #999;">(${user.role})</small></span>
+                ${isSelected ? '<span style="color: #1890ff; font-size: 16px;">✓</span>' : ''}
+            </div>
+        `;
+    }).join('');
+}
+
+// 切换用户选择状态
+function toggleAntdUserSelection(username, event) {
+    event.stopPropagation();
+    
+    if (!currentServiceDraft.allowed_users) {
+        currentServiceDraft.allowed_users = [];
+    }
+    
+    const index = currentServiceDraft.allowed_users.indexOf(username);
+    if (index > -1) {
+        // 已选中，取消选中
+        currentServiceDraft.allowed_users.splice(index, 1);
+    } else {
+        // 未选中，添加
+        currentServiceDraft.allowed_users.push(username);
+    }
+    
+    // 更新标签显示
+    renderAntdSelectTags();
+    
+    // 更新列表中的勾选状态
+    const option = document.querySelector(`.antd-select-option[data-username="${username}"]`);
+    if (option) {
+        const isChecked = currentServiceDraft.allowed_users.includes(username);
+        const checkMark = option.querySelector('span:last-child');
+        if (checkMark) {
+            checkMark.textContent = isChecked ? '✓' : '';
+            checkMark.style.color = isChecked ? '#1890ff' : 'transparent';
+        }
+    }
 }
 
 // 保存服务
@@ -4421,6 +4613,7 @@ async function saveService(id = null) {
         enabled: currentServiceDraft.enabled,
         http2: currentServiceDraft.http2 || false,
         http3: currentServiceDraft.http3 || false,
+        allowed_users: currentServiceDraft.allowed_users || [],
         config,
         extend_json: extendJson
     };

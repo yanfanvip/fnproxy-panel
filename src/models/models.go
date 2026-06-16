@@ -104,7 +104,8 @@ type ServiceConfig struct {
 	ExtendJSON    string      `json:"extend_json,omitempty"`    // 高级配置JSON（独立存储，运行时与Config合并）
 	HTTP2         bool        `json:"http2"`                    // 启用 HTTP/2（脚本运行时聊合到监听器）
 	HTTP3         bool        `json:"http3"`                    // 启用 HTTP/3 / QUIC（运行时聊合，HTTP/2 也会同时生效）
-	RequireAuth   bool        `json:"require_auth"` // 是否需要认证
+	RequireAuth   bool        `json:"require_auth"`             // 是否需要认证
+	AllowedUsers  []string    `json:"allowed_users,omitempty"`  // 允许访问的用户列表（空表示所有用户）
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
 }

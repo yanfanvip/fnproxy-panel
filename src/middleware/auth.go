@@ -70,13 +70,12 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 // isPublicPath 检查是否为公开路径
 func isPublicPath(path string) bool {
-	// 如果使用飞牛NAS网关认证，所有路径都需要通过网关认证
+	// 如果使用飞牛NAS网关认证,所有路径都需要通过网关认证
 	if config.IsRuntimeOAuthFnnas() {
 		// 仅保留真正公开的接口
 		publicPaths := []string{
 			"/api/geoip",
-			"/api/status",  // 状态接口公开，用于健康检查
-			"/ws/terminal",  // WebSocket终端：浏览器无法设置自定义Header，需要在握手后验证
+			"/api/status",  // 状态接口公开,用于健康检查
 		}
 		for _, p := range publicPaths {
 			if path == p {
@@ -145,7 +144,16 @@ func AdminMiddleware(next http.Handler) http.Handler {
 // CORSMiddleware CORS中间件
 func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			// 白名单验证 - 允许同源请求和特定域名
+			if isAllowedOrigin(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+			}
+			// 如果不在白名单中，不设置 CORS header，浏览器会阻止跨域请求
+		}
+		
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Auth")
 
@@ -156,6 +164,31 @@ func CORSMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isAllowedOrigin 检查来源是否在白名单中
+func isAllowedOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	
+	// 允许 localhost 和 127.0.0.1
+	allowedOrigins := []string{
+		"http://localhost",
+		"http://127.0.0.1",
+		"https://localhost",
+		"https://127.0.0.1",
+	}
+	
+	for _, allowed := range allowedOrigins {
+		if origin == allowed || strings.HasPrefix(origin, allowed+":") {
+			return true
+		}
+	}
+	
+	// 允许同域名（从配置或环境变量获取）
+	// TODO: 可以从配置文件读取允许的域名列表
+	return false
 }
 
 // LoggingMiddleware 日志中间件

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"sort"
@@ -82,19 +83,28 @@ func firewallGetClientIP(r *http.Request) string {
 	}
 	
 	// 处理 RemoteAddr
-	// Unix Socket 连接的 RemoteAddr 可能是 "@" 或空字符串
-	if r.RemoteAddr == "" || r.RemoteAddr == "@" {
-		// Unix Socket 连接，视为本地连接
+	// Unix Socket 连接的 RemoteAddr 可能是 "@"、空字符串或其他特殊格式
+	remoteAddr := strings.TrimSpace(r.RemoteAddr)
+	if remoteAddr == "" || remoteAddr == "@" {
+		// Unix Socket 连接,视为本地连接
 		return "127.0.0.1"
 	}
 	
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	// 检查是否包含协议前缀 (unix:, fd:等)
+	if strings.HasPrefix(remoteAddr, "unix:") || 
+	   strings.HasPrefix(remoteAddr, "fd:") {
+		return "127.0.0.1"
+	}
+	
+	ip, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
-		// 如果无法解析，检查是否是有效的 IP
-		if net.ParseIP(r.RemoteAddr) != nil {
-			return r.RemoteAddr
+		// 记录日志以便调试
+		fmt.Printf("[WARN] 无法解析 RemoteAddr: %s, error: %v\n", remoteAddr, err)
+		// 如果无法解析,检查是否是有效的 IP
+		if net.ParseIP(remoteAddr) != nil {
+			return remoteAddr
 		}
-		// 否则视为本地连接（Unix Socket）
+		// 否则视为本地连接(Unix Socket)
 		return "127.0.0.1"
 	}
 	return ip

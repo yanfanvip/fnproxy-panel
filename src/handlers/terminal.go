@@ -28,6 +28,8 @@ const (
 	terminalAttachedTTL       = 90 * time.Second
 	terminalDetachedRetention = 30 * time.Minute
 	terminalJanitorInterval   = 1 * time.Minute
+	maxSessionsPerUser        = 10  // 每用户最大会话数
+	maxTotalSessions          = 100 // 全局最大会话数
 )
 
 var upgrader = websocket.Upgrader{
@@ -354,13 +356,20 @@ func TerminalHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 func TerminalHandler(w http.ResponseWriter, r *http.Request) {
 	ensureTerminalJanitor()
 
+	// 首先验证认证 - 防止未授权访问
+	username := getTerminalOwner(r)
+	if username == "anonymous" {
+		WriteError(w, http.StatusUnauthorized, "需要认证")
+		return
+	}
+
 	sessionID := r.URL.Query().Get("session_id")
 	if sessionID == "" {
 		WriteError(w, http.StatusBadRequest, "session_id is required")
 		return
 	}
 
-	session := getTerminalSessionForOwner(sessionID, getTerminalOwner(r))
+	session := getTerminalSessionForOwner(sessionID, username)
 	if session == nil {
 		WriteError(w, http.StatusNotFound, "Terminal session not found")
 		return
@@ -377,6 +386,25 @@ func TerminalHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func createManagedTerminalSession(owner string, conn models.SSHConnection) (*TerminalSession, error) {
+	// 检查用户会话数限制
+	sessionsMu.RLock()
+	userSessionCount := 0
+	totalSessionCount := len(sessions)
+	for _, s := range sessions {
+		if s.Owner == owner && s.Status != "closed" {
+			userSessionCount++
+		}
+	}
+	sessionsMu.RUnlock()
+	
+	if userSessionCount >= maxSessionsPerUser {
+		return nil, fmt.Errorf("达到最大会话数限制 (%d)", maxSessionsPerUser)
+	}
+	
+	if totalSessionCount >= maxTotalSessions {
+		return nil, fmt.Errorf("系统会话数已达上限 (%d)", maxTotalSessions)
+	}
+	
 	session := &TerminalSession{
 		ID:            generateSessionID(),
 		Owner:         owner,

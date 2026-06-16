@@ -80,6 +80,47 @@ type deterministicReader struct {
 	buffer  []byte
 }
 
+// loginAttemptTracker 登录尝试跟踪器，防止暴力破解
+type loginAttemptTracker struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time // IP -> 尝试时间列表
+}
+
+var globalLoginTracker = &loginAttemptTracker{
+	attempts: make(map[string][]time.Time),
+}
+
+func (t *loginAttemptTracker) IsBlocked(ip string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	
+	now := time.Now()
+	window := 15 * time.Minute
+	maxAttempts := 5
+	
+	if times, ok := t.attempts[ip]; ok {
+		// 清理过期记录
+		var valid []time.Time
+		for _, tm := range times {
+			if now.Sub(tm) < window {
+				valid = append(valid, tm)
+			}
+		}
+		t.attempts[ip] = valid
+		
+		if len(valid) >= maxAttempts {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *loginAttemptTracker) Record(ip string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.attempts[ip] = append(t.attempts[ip], time.Now())
+}
+
 func (r *responseRecorder) WriteHeader(statusCode int) {
 	r.statusCode = statusCode
 	r.ResponseWriter.WriteHeader(statusCode)
@@ -1742,6 +1783,12 @@ func (s *Server) wrapServiceHandler(listener models.PortListener, service models
 			return
 		}
 
+		// 检查用户是否有权限访问该服务
+		if !checkServiceAccess(username, service.AllowedUsers) {
+			http.Error(w, "您没有权限访问此服务", http.StatusForbidden)
+			return
+		}
+
 		start := time.Now()
 		utils.GetMonitor().BeginRequest(listener, service)
 		recorder := &responseRecorder{ResponseWriter: w}
@@ -1751,6 +1798,29 @@ func (s *Server) wrapServiceHandler(listener models.PortListener, service models
 		}
 		utils.GetMonitor().RecordRequest(listener, service, r, recorder.statusCode, recorder.bytesOut, time.Since(start), username, serviceAccessLogEnabled(service))
 	})
+}
+
+// checkServiceAccess 检查用户是否有权限访问服务
+// allowedUsers 为空时，默认所有用户都可以访问
+func checkServiceAccess(username string, allowedUsers []string) bool {
+	// 如果没有设置允许的用户列表，默认所有用户都可以访问
+	if len(allowedUsers) == 0 {
+		return true
+	}
+	
+	// 如果用户名为空（未认证），拒绝访问
+	if username == "" {
+		return false
+	}
+	
+	// 检查用户是否在允许列表中
+	for _, allowed := range allowedUsers {
+		if allowed == username {
+			return true
+		}
+	}
+	
+	return false
 }
 
 func (s *Server) handleOAuthRequest(listener models.PortListener, w http.ResponseWriter, r *http.Request) bool {
@@ -1795,6 +1865,14 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		remoteAddr = strings.Split(xff, ",")[0]
 	}
 
+	// 检查是否被阻止（暴力破解防护）
+	if globalLoginTracker.IsBlocked(remoteAddr) {
+		fmt.Printf("OAuth 登录被阻止[IP被封禁] remote=%s\n", remoteAddr)
+		security.GetAuditLogger().LogOAuthLogin("", remoteAddr, false, "IP因多次失败被封禁")
+		s.renderOAuthLoginPage(w, r, "登录尝试过多，请稍后再试")
+		return
+	}
+
 	if err := r.ParseForm(); err != nil {
 		fmt.Printf("OAuth 登录失败[表单解析失败] remote=%s err=%v\n", remoteAddr, err)
 		security.GetAuditLogger().LogOAuthLogin("", remoteAddr, false, "表单解析失败")
@@ -1820,18 +1898,24 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	user := config.GetManager().GetUserByUsername(username)
 	if user == nil {
+		// 记录失败尝试
+		globalLoginTracker.Record(remoteAddr)
 		fmt.Printf("OAuth 登录失败[用户不存在] remote=%s username=%s redirect=%s\n", remoteAddr, username, redirectTarget)
 		security.GetAuditLogger().LogOAuthLogin(username, remoteAddr, false, "用户不存在")
 		s.renderOAuthLoginPage(w, r, "用户名或密码错误")
 		return
 	}
 	if !user.Enabled {
+		// 记录失败尝试
+		globalLoginTracker.Record(remoteAddr)
 		fmt.Printf("OAuth 登录失败[用户被禁用] remote=%s username=%s redirect=%s\n", remoteAddr, username, redirectTarget)
 		security.GetAuditLogger().LogOAuthLogin(username, remoteAddr, false, "用户已被禁用")
 		s.renderOAuthLoginPage(w, r, "用户已被禁用")
 		return
 	}
 	if !security.ComparePassword(user.Password, password) {
+		// 记录失败尝试
+		globalLoginTracker.Record(remoteAddr)
 		fmt.Printf(
 			"OAuth 登录失败[密码错误] remote=%s username=%s redirect=%s password_len=%d encrypted_payload=%t stored_secure_hash=%t default_admin_match=%t\n",
 			remoteAddr,
